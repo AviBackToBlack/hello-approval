@@ -40,12 +40,13 @@ function Assert-ExistingRuntime {
     )
 
     $required = @($Pin.installation_policy.installed_files)
-    if (-not (Test-Path -LiteralPath $RuntimeRoot -PathType Container)) {
-        throw "Runtime root is not a directory: $RuntimeRoot"
+    $runtimeRootItem = Get-Item -LiteralPath $RuntimeRoot -Force
+    if (-not (Test-Path -LiteralPath $RuntimeRoot -PathType Container) -or ($runtimeRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Runtime root must be a real directory, not a reparse point: $RuntimeRoot"
     }
 
     $rootItems = @(Get-ChildItem -LiteralPath $RuntimeRoot -Force)
-    if ($rootItems.Count -ne 1 -or $rootItems[0].Name -ne 'bin' -or -not $rootItems[0].PSIsContainer) {
+    if ($rootItems.Count -ne 1 -or $rootItems[0].Name -ne 'bin' -or -not $rootItems[0].PSIsContainer -or ($rootItems[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw "Existing runtime root surface differs from the approved layout (exactly one bin directory required): $RuntimeRoot"
     }
 

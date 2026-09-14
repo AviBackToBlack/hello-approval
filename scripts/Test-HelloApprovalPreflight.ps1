@@ -119,12 +119,13 @@ try {
     $runtimeVerified = $false
     if (Test-Path -LiteralPath $runtimeRoot) {
         $runtimeProblems = 0
-        if (-not (Test-Path -LiteralPath $runtimeRoot -PathType Container)) {
+        $runtimeRootItem = Get-Item -LiteralPath $runtimeRoot -Force
+        if (-not (Test-Path -LiteralPath $runtimeRoot -PathType Container) -or ($runtimeRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
             $runtimeProblems++
-            Add-Finding -Severity 'BLOCK' -Check 'runtime.root.surface' -Message 'Pinned runtime root exists but is not a directory.' -Value $runtimeRoot
+            Add-Finding -Severity 'BLOCK' -Check 'runtime.root.surface' -Message 'Pinned runtime root must be a real directory, not a reparse point.' -Value $runtimeRoot
         } else {
             $rootItems = @(Get-ChildItem -LiteralPath $runtimeRoot -Force)
-            $rootValid = $rootItems.Count -eq 1 -and $rootItems[0].Name -eq 'bin' -and $rootItems[0].PSIsContainer
+            $rootValid = $rootItems.Count -eq 1 -and $rootItems[0].Name -eq 'bin' -and $rootItems[0].PSIsContainer -and -not ($rootItems[0].Attributes -band [IO.FileAttributes]::ReparsePoint)
             if (-not $rootValid) {
                 $runtimeProblems++
                 Add-Finding -Severity 'BLOCK' -Check 'runtime.root.surface' -Message 'Pinned runtime root must contain exactly one bin directory and no other entries.' -Value (@($rootItems | ForEach-Object { $_.Name }) -join ', ')
