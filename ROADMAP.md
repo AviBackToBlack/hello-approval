@@ -14,10 +14,12 @@ The implementation is intentionally sliced into small reviewable changes. No pha
 ### HA-0.2: Upstream/provenance research gate
 
 - Re-check current `sshenc` release/version behavior.
+- Record the exact upstream release tag/commit used for the audit and the source paths supporting packaging/integration claims.
 - Document release provenance limitations, including Windows Authenticode status.
 - Inspect upstream Windows packaging and installer side effects; never assume the installer is inert.
 - Confirm the exact shipped binary surface (`sshenc.exe`, `sshenc-agent.exe`, and related tools) for the pinned release.
-- Decide pin/checksum source, archive-vs-installer acquisition policy, and upgrade policy.
+- Record the selected Windows archive asset name and SHA-256 in a reproducible pin/checksum artifact.
+- Decide archive-vs-installer acquisition policy and upgrade policy.
 - Re-test relevant Windows/WebAuthn/TPM assumptions and known fragility against the pinned release.
 
 ## Phase 1 — Git reference integration

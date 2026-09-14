@@ -91,9 +91,13 @@ On Windows, the `SSH_AUTH_SOCK` guardrail is still intentional even though the v
 
 ### Upstream packaging boundary
 
-The upstream Windows installer is not an inert file-copy mechanism. In the audited v0.6.101 source, the WiX MSI runs `sshenc.exe install` as a deferred custom action after installing files. The corresponding Windows integration code can stop/disable the stock `ssh-agent` service and set persistent user `SSH_AUTH_SOCK` and `GIT_SSH_COMMAND` values.
+The upstream Windows installer is not an inert file-copy mechanism. For the audited v0.6.101 tag (`2b689c8644d0590e80f1839721dec53b95f44526`), `installer/sshenc.wxs` wires `sshenc.exe install` as a deferred custom action after installing files and wires `sshenc.exe uninstall` as a deferred custom action before removal. The corresponding Windows integration code can stop/disable the stock `ssh-agent` service and set persistent user `SSH_AUTH_SOCK` and `GIT_SSH_COMMAND` values.
 
-Those side effects violate this project's isolation invariants. Until upstream provides an installer mode whose behavior is proven compatible, v0.1 must use a pinned ZIP/manual-binary placement path with checksum verification and must not run `sshenc install`. WinGet is also unsuitable when its manifest resolves to that MSI.
+Those side effects violate this project's isolation invariants. Until upstream provides an installer mode whose behavior is proven compatible, v0.1 must use a pinned ZIP/manual-binary placement path with checksum verification and must not run `sshenc install` or `sshenc uninstall`. WinGet is also unsuitable when its manifest resolves to that MSI.
+
+The upstream `gitenc.exe` integration is also outside the v0.1 boundary. At v0.6.101, `gitenc --config` writes `core.sshCommand` in addition to signing configuration, and normal `gitenc` operation is designed to wrap Git transport as well as signing. `hello-approval` deliberately configures Git signing directly and leaves ordinary SSH transport independent.
+
+In v0.1, upstream integration commands (`sshenc install`, `sshenc uninstall`, and `gitenc`) are therefore out of scope. Only the minimal signer/agent binary surface required by the reference integration is used.
 
 This packaging decision is about avoiding unwanted integration mutations; it does not make the ZIP intrinsically trustworthy.
 
