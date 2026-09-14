@@ -190,11 +190,15 @@ try {
         }
     } catch {
         try {
-            $svcFallback = Get-Service -Name 'ssh-agent' -ErrorAction Stop
-            Add-Finding -Severity 'INFO' -Check 'stock-ssh-agent' -Message 'Observed stock ssh-agent state through non-CIM fallback; hello-approval will not change it.' -Value ([pscustomobject]@{
-                state      = [string]$svcFallback.Status
-                start_mode = [string]$svcFallback.StartType
-            })
+            $svcFallback = Get-Service -Name 'ssh-agent' -ErrorAction SilentlyContinue
+            if ($null -eq $svcFallback) {
+                Add-Finding -Severity 'INFO' -Check 'stock-ssh-agent' -Message 'Windows OpenSSH Authentication Agent service is not installed or not registered for this host.'
+            } else {
+                Add-Finding -Severity 'INFO' -Check 'stock-ssh-agent' -Message 'Observed stock ssh-agent state through non-CIM fallback; hello-approval will not change it.' -Value ([pscustomobject]@{
+                    state      = [string]$svcFallback.Status
+                    start_mode = [string]$svcFallback.StartType
+                })
+            }
         } catch {
             Add-Finding -Severity 'WARN' -Check 'stock-ssh-agent' -Message 'Could not query stock ssh-agent service state.' -Value $_.Exception.Message
         }
