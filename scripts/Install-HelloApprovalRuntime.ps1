@@ -21,6 +21,18 @@ function Get-StreamSha256 {
     }
 }
 
+
+function Get-FileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    try {
+        return Get-StreamSha256 -Stream $stream
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 function Assert-ExistingRuntime {
     param(
         [Parameter(Mandatory = $true)][string]$BinPath,
@@ -45,7 +57,7 @@ function Assert-ExistingRuntime {
         }
         $path = Join-Path $BinPath $name
         $item = Get-Item -LiteralPath $path
-        $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        $hash = Get-FileSha256 -Path $path
         if ($item.Length -ne [int64]$filePin.size_bytes -or $hash -ne ([string]$filePin.sha256).ToLowerInvariant()) {
             throw "Existing runtime file does not match pin: $path"
         }
@@ -72,15 +84,18 @@ if ($pin.installation_policy.target_architecture -ne 'x86_64-pc-windows-msvc') {
     throw "This installer slice only supports x86_64-pc-windows-msvc; pin says $($pin.installation_policy.target_architecture)."
 }
 
-$resolvedArchive = (Resolve-Path -LiteralPath $ArchivePath).Path
-$archiveItem = Get-Item -LiteralPath $resolvedArchive
+if (-not [System.IO.File]::Exists($ArchivePath)) {
+    throw "Archive does not exist: $ArchivePath"
+}
+$resolvedArchive = [System.IO.Path]::GetFullPath($ArchivePath)
+$archiveItem = New-Object System.IO.FileInfo($resolvedArchive)
 if ($archiveItem.Name -ne $pin.selected_asset.name) {
     throw "Archive filename mismatch. Expected '$($pin.selected_asset.name)', got '$($archiveItem.Name)'."
 }
 if ($archiveItem.Length -ne [int64]$pin.selected_asset.size_bytes) {
     throw "Archive size mismatch for '$resolvedArchive'."
 }
-$archiveHash = (Get-FileHash -LiteralPath $resolvedArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+$archiveHash = Get-FileSha256 -Path $resolvedArchive
 if ($archiveHash -ne ([string]$pin.selected_asset.sha256).ToLowerInvariant()) {
     throw "Archive SHA-256 mismatch for '$resolvedArchive'."
 }
