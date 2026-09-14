@@ -221,7 +221,7 @@ try {
         [pscustomobject]@{
             schema   = 'hello-approval/preflight/v1'
             blocked  = $blocked
-            findings = @($findings)
+            findings = $findings.ToArray()
         } | ConvertTo-Json -Depth 8
     } else {
         $findings | Format-Table -AutoSize severity, check, message, value
@@ -246,7 +246,7 @@ try {
             schema   = 'hello-approval/preflight/v1'
             blocked  = $blocked
             error    = $_.Exception.Message
-            findings = @($findings)
+            findings = $findings.ToArray()
         } | ConvertTo-Json -Depth 8
     } else {
         $findings | Format-Table -AutoSize severity, check, message, value
