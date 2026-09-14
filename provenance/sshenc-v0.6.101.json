@@ -14,7 +14,15 @@
       "repository": "godaddy/hardware-enclave",
       "path": ".github/workflows/reusable-release.yml",
       "source_ref": "main",
-      "resolved_commit": "2fd3cf2594f8b9446004b73feef7ef2dd7954bdf"
+      "resolved_commit": "2fd3cf2594f8b9446004b73feef7ef2dd7954bdf",
+      "inferred_build_inputs": {
+        "libenclaveapp_clone_commit": {
+          "value": "2fd3cf2594f8b9446004b73feef7ef2dd7954bdf",
+          "confidence": "inferred-from-repository-history",
+          "enforced_by_workflow": false,
+          "scope": "sshenc-tpm-bridge path dependency in the release workspace; not part of the v0.1 installed surface"
+        }
+      }
     }
   },
   "selected_asset": {
@@ -30,42 +38,66 @@
       "sha256": "83ff19ffb8601a6d44ad68a8d042e16b31515aa948e451a3bb434e6914665df7",
       "size_bytes": 6935552,
       "authenticode_present": false,
-      "v0_1_policy": "required"
+      "policy": {
+        "milestone": "v0.1",
+        "disposition": "required",
+        "reason": "Primary signing/key-management client used by the v0.1 reference integration."
+      }
     },
     {
       "name": "sshenc-agent.exe",
       "sha256": "fb75b274c1e0369a5f9d315ba1143f5235f3ec625050429ab4fda969148d35f2",
       "size_bytes": 3855872,
       "authenticode_present": false,
-      "v0_1_policy": "required"
+      "policy": {
+        "milestone": "v0.1",
+        "disposition": "required",
+        "reason": "Isolated per-user signing agent used by the v0.1 reference integration."
+      }
     },
     {
       "name": "sshenc-keygen.exe",
       "sha256": "7294f2bfe7f3806d93dffb6be05e532ef61b8d8660a5e83a84dc09bb9a73319c",
       "size_bytes": 1543168,
       "authenticode_present": false,
-      "v0_1_policy": "not-used"
+      "policy": {
+        "milestone": "v0.1",
+        "disposition": "unused",
+        "reason": "v0.1 uses `sshenc keygen --strong` through sshenc.exe instead of the standalone keygen binary."
+      }
     },
     {
       "name": "gitenc.exe",
       "sha256": "b88350c1594c615b46fef4ea1f1bca144f96a85b85ce6224988bdd5e663fbe90",
       "size_bytes": 873984,
       "authenticode_present": false,
-      "v0_1_policy": "excluded-transport-coupling"
+      "policy": {
+        "milestone": "v0.1",
+        "disposition": "excluded",
+        "reason": "Upstream gitenc couples signing configuration with Git SSH transport configuration, which violates the v0.1 transport-isolation boundary."
+      }
     },
     {
       "name": "sshenc-tpm-bridge.exe",
       "sha256": "1b7cdeed3c235ced1ba32669be4e25ddefc0f68dd1b09d6db3a688385bb5e0a8",
       "size_bytes": 635392,
       "authenticode_present": false,
-      "v0_1_policy": "not-used-native-windows"
+      "policy": {
+        "milestone": "v0.1",
+        "disposition": "unused",
+        "reason": "Native-Windows v0.1 does not use the WSL TPM bridge."
+      }
     },
     {
       "name": "sshenc_pkcs11.dll",
       "sha256": "7a5caf3a325f9234e8afe14355fbcbeda16fc1f7c043f11560b07647ba33a0b2",
       "size_bytes": 229888,
       "authenticode_present": false,
-      "v0_1_policy": "not-used"
+      "policy": {
+        "milestone": "v0.1",
+        "disposition": "unused",
+        "reason": "v0.1 does not use the upstream PKCS#11 integration path."
+      }
     }
   ],
   "known_provenance_limits": [
@@ -78,14 +110,37 @@
   ],
   "installation_policy": {
     "allowed_distribution": "zip-manual-placement",
-    "forbidden_integration_commands": [
-      "sshenc install",
-      "sshenc uninstall",
-      "gitenc"
-    ],
     "installed_files": [
       "sshenc.exe",
       "sshenc-agent.exe"
-    ]
+    ],
+    "forbidden_integrations": [
+      {
+        "program": "sshenc.exe",
+        "arguments": [
+          "install"
+        ],
+        "scope": "exact-subcommand",
+        "reason": "Mutates Windows SSH/Git integration state, including stock ssh-agent and persistent environment integration."
+      },
+      {
+        "program": "sshenc.exe",
+        "arguments": [
+          "uninstall"
+        ],
+        "scope": "exact-subcommand",
+        "reason": "Restores/removes upstream-managed Windows SSH/Git integration state outside hello-approval ownership."
+      },
+      {
+        "program": "gitenc.exe",
+        "arguments": [
+          "*"
+        ],
+        "scope": "all-invocations",
+        "reason": "Any gitenc.exe invocation is outside the v0.1 integration boundary because gitenc is designed to wrap Git transport as well as signing."
+      }
+    ],
+    "target_architecture": "x86_64-pc-windows-msvc",
+    "other_architectures_require_separate_pin": true
   }
 }

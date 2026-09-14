@@ -19,7 +19,7 @@ The v0.1 reference integration is pinned to:
 
 The release asset digest reported by GitHub matches an independent SHA-256 calculation over a fresh download of the release ZIP.
 
-Machine-readable details are in [`provenance/sshenc-v0.6.101.json`](../provenance/sshenc-v0.6.101.json).
+Machine-readable details are in [`provenance/sshenc-v0.6.101.json`](../provenance/sshenc-v0.6.101.json). The file uses a stable per-file `policy` object (`milestone`, normalized `disposition`, and free-text `reason`) so later pins do not need milestone-specific field names. `disposition` is intentionally a closed enum for v1 (`required`, `unused`, or `excluded`); integration-specific detail belongs in `reason`, not in new disposition values.
 
 ## 3. Why the ZIP is selected instead of MSI / WinGet
 
@@ -57,6 +57,8 @@ The pinned x86_64 Windows ZIP contains six files:
 `sshenc.exe` and `sshenc-agent.exe` do not import the packaged `sshenc_pkcs11.dll`; their normal PE imports are Windows/runtime DLLs, including `webauthn.dll`.
 
 The v0.1 runtime layout should therefore install only the required client and agent binaries unless a later reviewed feature proves another file is necessary.
+
+This pin covers **x86_64 Windows only**. Upstream also publishes an `aarch64-pc-windows-msvc` ZIP; ARM64 Windows requires its own archive digest, file hashes, provenance review, and native acceptance rather than inheriting this x86_64 pin.
 
 ## 5. Windows Authenticode status
 
@@ -124,7 +126,7 @@ For the v0.6.101 source tree:
 - the Windows release build uses `cargo build --workspace`, so the bridge binary in the ZIP is affected by that cloned source;
 - `sshenc.exe` and `sshenc-agent.exe`, the only binaries used by v0.1, are not wired to that direct bridge path dependency.
 
-Repository history allows the unpinned clone used during this release window to be reconstructed with high confidence: the `libenclaveapp` default-branch tip immediately before the run was also `2fd3cf2594f8b9446004b73feef7ef2dd7954bdf`, and no commits landed between release-run start and completion of the x86_64 Windows build. However, the workflow itself did not enforce that SHA.
+Repository history allows the unpinned clone used during this release window to be reconstructed with high confidence: the `libenclaveapp` default-branch tip immediately before the run was also `2fd3cf2594f8b9446004b73feef7ef2dd7954bdf`, and no commits landed between release-run start and completion of the x86_64 Windows build. However, the workflow itself did not enforce that SHA. The machine-readable pin records this separately as an **inferred** build input with `enforced_by_workflow: false`; consumers must not upgrade that inference into a cryptographic provenance claim.
 
 This is another reason to minimize the installed binary surface instead of treating every file in an upstream archive as implicitly equivalent.
 
@@ -182,7 +184,7 @@ For every candidate version:
 13. repeat native Windows acceptance: `--strong` key creation, isolated agent, Windows Hello prompt, byte-exact/local signature verification, Git signing, and GitHub verification;
 14. only after acceptance, update the machine-readable pin in a dedicated reviewable PR.
 
-No updater should silently replace the pinned binaries merely because a newer upstream release exists.
+No updater should silently replace the pinned binaries merely because a newer upstream release exists. A different Windows architecture is treated like a different pin, not as an interchangeable asset under the same approval.
 
 ## 12. Evidence map for v0.6.101
 
