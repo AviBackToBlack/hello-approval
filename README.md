@@ -142,3 +142,5 @@ The upstream `sshenc` project and release provenance must be evaluated independe
 For the currently audited `sshenc` v0.6.101 Windows release, `hello-approval` deliberately prefers the ZIP/manual-binary path over the MSI/WinGet installer path. The upstream MSI runs `sshenc install` during installation and `sshenc uninstall` during removal, while those integration paths manage SSH/Git state that this project intentionally leaves alone. The upstream `gitenc` integration is excluded for the same reason: it couples signing setup with Git SSH transport configuration.
 
 The audited v0.6.101 x86_64 Windows `sshenc.exe` is also not Authenticode-signed. That is a point-in-time provenance limitation, not a claim about every future release; each pinned upgrade must re-check it. A matching SHA-256 digest establishes asset identity, not trustworthiness.
+
+See [Upstream provenance and pinning](docs/PROVENANCE.md) for the immutable release evidence, selected asset hash, binary surface, and upgrade gate.
