@@ -20,7 +20,10 @@
           "value": "2fd3cf2594f8b9446004b73feef7ef2dd7954bdf",
           "confidence": "inferred-from-repository-history",
           "enforced_by_workflow": false,
-          "scope": "sshenc-tpm-bridge path dependency in the release workspace; not part of the v0.1 installed surface"
+          "scope": "sshenc-tpm-bridge path dependency in the release workspace; not part of the v0.1 installed surface",
+          "requested_repository": "godaddy/libenclaveapp",
+          "resolved_repository_at_audit_time": "godaddy/hardware-enclave",
+          "repository_resolution": "github-rename-redirect"
         }
       }
     }
@@ -106,7 +109,8 @@
     "The historical run resolves that reusable workflow to commit 2fd3cf2594f8b9446004b73feef7ef2dd7954bdf.",
     "The resolved reusable workflow uses floating runner/tool/action references including windows-latest and dtolnay/rust-toolchain@stable.",
     "Historical workflow logs were expired at audit time, preventing reconstruction of exact runner image and Rust stable version.",
-    "The release workflow performs an unpinned libenclaveapp clone used by the sshenc-tpm-bridge path dependency; that bridge binary is not part of the v0.1 installed surface."
+    "The release workflow performs an unpinned libenclaveapp clone used by the sshenc-tpm-bridge path dependency; that bridge binary is not part of the v0.1 installed surface.",
+    "The workflow clones the legacy repository name godaddy/libenclaveapp, which currently redirects to godaddy/hardware-enclave; the workflow does not cryptographically bind that name redirect, so a future namespace reassignment could resolve differently."
   ],
   "installation_policy": {
     "allowed_distribution": "zip-manual-placement",
