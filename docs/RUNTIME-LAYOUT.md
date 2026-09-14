@@ -50,6 +50,8 @@ HA-0.2 pins the full upstream archive but v0.1 installs only:
 
 The installer in this repository must reject an archive whose SHA-256/size or per-file SHA-256/size does not match the machine-readable provenance pin. It must not extract the other upstream files into the production runtime directory.
 
+The versioned runtime surface is exact, not additive: the version root contains **only** the `bin` directory, and `bin` contains **only** the two required regular files. Hidden/system files, subdirectories, reparse points, or root-level strays are treated as a mismatched runtime rather than ignored.
+
 The runtime installer does **not**:
 
 - invoke the MSI;
@@ -166,12 +168,12 @@ The preflight is read-only. It inspects, among other things:
 - project/pin availability;
 - any existing pinned runtime files and their hashes;
 - the dedicated pipe name for an existing listener;
-- process/user `SSHENC_AGENT_SOCKET` overrides;
-- process/user `SSH_AUTH_SOCK` and `GIT_SSH_COMMAND` without changing them;
+- process/user/machine `SSHENC_AGENT_SOCKET` overrides;
+- process/user/machine `SSH_AUTH_SOCK` and `GIT_SSH_COMMAND` without changing them;
 - stock Windows `ssh-agent` state;
 - existing sshenc config at any known candidate path, and the authoritative resolved path once the pinned runtime exists;
 - `~/.ssh/config` for upstream-managed or `IdentityAgent` state;
-- relevant global Git transport/signing configuration.
+- relevant system and global Git transport/signing configuration.
 
 Exit codes:
 
@@ -203,7 +205,7 @@ The script:
 4. verifies every entry's size and SHA-256;
 5. stages only `installation_policy.installed_files`;
 6. re-verifies staged hashes;
-7. moves the version directory into its deterministic destination;
+7. atomically renames the staged version directory into its deterministic destination with a primitive that fails if the destination already exists;
 8. refuses to overwrite a mismatched existing runtime.
 
 It deliberately has no "latest" lookup and no package-manager mode.

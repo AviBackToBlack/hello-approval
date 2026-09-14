@@ -28,15 +28,18 @@ function Add-Finding {
 function Get-EnvironmentValue {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][ValidateSet('Process', 'User')][string]$Target
+        [Parameter(Mandatory = $true)][ValidateSet('Process', 'User', 'Machine')][string]$Target
     )
     return [Environment]::GetEnvironmentVariable($Name, [EnvironmentVariableTarget]::$Target)
 }
 
-function Get-GitGlobalValue {
-    param([Parameter(Mandatory = $true)][string]$Key)
+function Get-GitScopedValue {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('global', 'system')][string]$Scope,
+        [Parameter(Mandatory = $true)][string]$Key
+    )
 
-    $value = & git config --global --get $Key 2>$null
+    $value = & git config ("--{0}" -f $Scope) --get $Key 2>$null
     if ($LASTEXITCODE -eq 0) {
         return ($value -join "`n")
     }
@@ -76,6 +79,11 @@ try {
     } else {
         Add-Finding -Severity 'PASS' -Check 'pin.schema' -Message 'Provenance pin schema is supported.' -Value $pin.schema
     }
+    if ($pin.installation_policy.allowed_distribution -ne 'zip-manual-placement') {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.policy.distribution' -Message 'Pin distribution policy is incompatible with the HA-1.1 installer.' -Value $pin.installation_policy.allowed_distribution
+    } else {
+        Add-Finding -Severity 'PASS' -Check 'pin.policy.distribution' -Message 'Pin distribution policy matches the inert ZIP installer.' -Value $pin.installation_policy.allowed_distribution
+    }
 
     $validDispositions = @('required', 'unused', 'excluded')
     $invalidDispositions = @($pin.files | Where-Object { $validDispositions -notcontains $_.policy.disposition } | ForEach-Object { $_.name })
@@ -109,43 +117,59 @@ try {
 
     $requiredFiles = @($pin.installation_policy.installed_files)
     $runtimeVerified = $false
-    if (Test-Path -LiteralPath $runtimeBin -PathType Container) {
+    if (Test-Path -LiteralPath $runtimeRoot) {
         $runtimeProblems = 0
-        $unexpected = @(
-            Get-ChildItem -LiteralPath $runtimeBin -File |
-                Where-Object { $requiredFiles -notcontains $_.Name } |
-                Select-Object -ExpandProperty Name
-        )
-        if ($unexpected.Count -gt 0) {
+        if (-not (Test-Path -LiteralPath $runtimeRoot -PathType Container)) {
             $runtimeProblems++
-            Add-Finding -Severity 'BLOCK' -Check 'runtime.surface' -Message 'Runtime bin directory contains files outside the approved surface.' -Value ($unexpected -join ', ')
-        }
+            Add-Finding -Severity 'BLOCK' -Check 'runtime.root.surface' -Message 'Pinned runtime root exists but is not a directory.' -Value $runtimeRoot
+        } else {
+            $rootItems = @(Get-ChildItem -LiteralPath $runtimeRoot -Force)
+            $rootValid = $rootItems.Count -eq 1 -and $rootItems[0].Name -eq 'bin' -and $rootItems[0].PSIsContainer
+            if (-not $rootValid) {
+                $runtimeProblems++
+                Add-Finding -Severity 'BLOCK' -Check 'runtime.root.surface' -Message 'Pinned runtime root must contain exactly one bin directory and no other entries.' -Value (@($rootItems | ForEach-Object { $_.Name }) -join ', ')
+            }
 
-        foreach ($name in $requiredFiles) {
-            $path = Join-Path $runtimeBin $name
-            $filePin = $pin.files | Where-Object { $_.name -eq $name } | Select-Object -First 1
-            if ($null -eq $filePin) {
+            if (-not (Test-Path -LiteralPath $runtimeBin -PathType Container)) {
                 $runtimeProblems++
-                Add-Finding -Severity 'BLOCK' -Check "runtime.$name" -Message 'Required runtime file is missing from provenance pin.'
-                continue
-            }
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-                $runtimeProblems++
-                Add-Finding -Severity 'BLOCK' -Check "runtime.$name" -Message 'Pinned runtime directory exists but a required file is missing.' -Value $path
-                continue
-            }
-            $item = Get-Item -LiteralPath $path
-            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
-            if (($item.Length -ne [int64]$filePin.size_bytes) -or ($hash -ne ([string]$filePin.sha256).ToLowerInvariant())) {
-                $runtimeProblems++
-                Add-Finding -Severity 'BLOCK' -Check "runtime.$name" -Message 'Existing runtime file does not match the provenance pin.' -Value $path
+                Add-Finding -Severity 'BLOCK' -Check 'runtime.surface' -Message 'Pinned runtime root exists but bin directory is missing or not a directory.' -Value $runtimeBin
             } else {
-                Add-Finding -Severity 'PASS' -Check "runtime.$name" -Message 'Existing runtime file matches the provenance pin.' -Value $path
+                $actualItems = @(Get-ChildItem -LiteralPath $runtimeBin -Force)
+                $actualNames = @($actualItems | ForEach-Object { $_.Name })
+                $nameDiff = @(Compare-Object -ReferenceObject ($requiredFiles | Sort-Object) -DifferenceObject ($actualNames | Sort-Object))
+                $nonFiles = @($actualItems | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
+                if ($nameDiff.Count -ne 0 -or $nonFiles.Count -ne 0) {
+                    $runtimeProblems++
+                    Add-Finding -Severity 'BLOCK' -Check 'runtime.surface' -Message 'Runtime bin surface differs from the exact approved regular-file set.' -Value ($actualNames -join ', ')
+                }
+
+                foreach ($name in $requiredFiles) {
+                    $path = Join-Path $runtimeBin $name
+                    $filePin = $pin.files | Where-Object { $_.name -eq $name } | Select-Object -First 1
+                    if ($null -eq $filePin) {
+                        $runtimeProblems++
+                        Add-Finding -Severity 'BLOCK' -Check "runtime.$name" -Message 'Required runtime file is missing from provenance pin.'
+                        continue
+                    }
+                    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                        $runtimeProblems++
+                        Add-Finding -Severity 'BLOCK' -Check "runtime.$name" -Message 'Pinned runtime directory exists but a required regular file is missing.' -Value $path
+                        continue
+                    }
+                    $item = Get-Item -LiteralPath $path -Force
+                    $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+                    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or ($item.Length -ne [int64]$filePin.size_bytes) -or ($hash -ne ([string]$filePin.sha256).ToLowerInvariant())) {
+                        $runtimeProblems++
+                        Add-Finding -Severity 'BLOCK' -Check "runtime.$name" -Message 'Existing runtime file is redirected or does not match the provenance pin.' -Value $path
+                    } else {
+                        Add-Finding -Severity 'PASS' -Check "runtime.$name" -Message 'Existing runtime file matches the provenance pin.' -Value $path
+                    }
+                }
             }
         }
         $runtimeVerified = ($runtimeProblems -eq 0)
     } else {
-        Add-Finding -Severity 'INFO' -Check 'runtime.surface' -Message 'Pinned runtime is not installed yet.' -Value $runtimeBin
+        Add-Finding -Severity 'INFO' -Check 'runtime.surface' -Message 'Pinned runtime is not installed yet.' -Value $runtimeRoot
     }
 
     if ($runtimeVerified) {
@@ -164,7 +188,7 @@ try {
         Add-Finding -Severity 'INFO' -Check 'sshenc.config.path' -Message 'Pinned runtime is not yet verified; inspecting common config candidates until sshenc.exe can resolve the authoritative path.' -Value ($configCandidates -join '; ')
     }
 
-    foreach ($target in @('Process', 'User')) {
+    foreach ($target in @('Process', 'User', 'Machine')) {
         $override = Get-EnvironmentValue -Name 'SSHENC_AGENT_SOCKET' -Target $target
         if (-not [string]::IsNullOrWhiteSpace($override)) {
             Add-Finding -Severity 'BLOCK' -Check "environment.$target.SSHENC_AGENT_SOCKET" -Message 'SSHENC_AGENT_SOCKET would override the approved config socket.' -Value $override
@@ -250,26 +274,28 @@ try {
         Add-Finding -Severity 'WARN' -Check 'git.present' -Message 'Git was not found in PATH; Git configuration preflight was skipped.'
     } else {
         Add-Finding -Severity 'PASS' -Check 'git.present' -Message 'Git is available.' -Value $gitCommand.Source
-        foreach ($key in @(
-            'core.sshCommand',
-            'gpg.format',
-            'gpg.ssh.program',
-            'gpg.ssh.allowedSignersFile',
-            'user.signingkey',
-            'commit.gpgsign',
-            'tag.gpgsign',
-            'user.name',
-            'user.email'
-        )) {
-            $value = Get-GitGlobalValue -Key $key
-            if ($null -ne $value -and $value -ne '') {
-                $severity = 'INFO'
-                if ($key -eq 'core.sshCommand') {
-                    $severity = 'WARN'
+        foreach ($scope in @('system', 'global')) {
+            foreach ($key in @(
+                'core.sshCommand',
+                'gpg.format',
+                'gpg.ssh.program',
+                'gpg.ssh.allowedSignersFile',
+                'user.signingkey',
+                'commit.gpgsign',
+                'tag.gpgsign',
+                'user.name',
+                'user.email'
+            )) {
+                $value = Get-GitScopedValue -Scope $scope -Key $key
+                if ($null -ne $value -and $value -ne '') {
+                    $severity = 'INFO'
+                    if ($key -eq 'core.sshCommand') {
+                        $severity = 'WARN'
+                    }
+                    Add-Finding -Severity $severity -Check "git.$scope.$key" -Message "Existing $scope Git setting observed; later slices must not overwrite it implicitly." -Value $value
+                } else {
+                    Add-Finding -Severity 'PASS' -Check "git.$scope.$key" -Message "$scope Git setting is absent."
                 }
-                Add-Finding -Severity $severity -Check "git.global.$key" -Message 'Existing global Git setting observed; later slices must not overwrite it implicitly.' -Value $value
-            } else {
-                Add-Finding -Severity 'PASS' -Check "git.global.$key" -Message 'Global Git setting is absent.'
             }
         }
     }
@@ -295,7 +321,7 @@ try {
     exit 0
 } catch {
     if ($findings.Count -eq 0) {
-        Write-Error $_
+        Write-Error $_ -ErrorAction Continue
         exit 1
     }
 
@@ -309,7 +335,7 @@ try {
         } | ConvertTo-Json -Depth 8
     } else {
         $findings | Format-Table -AutoSize severity, check, message, value
-        Write-Error $_.Exception.Message
+        Write-Error $_.Exception.Message -ErrorAction Continue
     }
 
     if ($blocked) { exit 2 }

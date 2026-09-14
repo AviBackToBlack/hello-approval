@@ -35,19 +35,27 @@ function Get-FileSha256 {
 
 function Assert-ExistingRuntime {
     param(
-        [Parameter(Mandatory = $true)][string]$BinPath,
+        [Parameter(Mandatory = $true)][string]$RuntimeRoot,
         [Parameter(Mandatory = $true)][object]$Pin
     )
 
     $required = @($Pin.installation_policy.installed_files)
-    if (-not (Test-Path -LiteralPath $BinPath -PathType Container)) {
-        throw "Runtime root exists but bin directory is missing: $BinPath"
+    if (-not (Test-Path -LiteralPath $RuntimeRoot -PathType Container)) {
+        throw "Runtime root is not a directory: $RuntimeRoot"
     }
 
-    $actualNames = @(Get-ChildItem -LiteralPath $BinPath -File | Select-Object -ExpandProperty Name)
+    $rootItems = @(Get-ChildItem -LiteralPath $RuntimeRoot -Force)
+    if ($rootItems.Count -ne 1 -or $rootItems[0].Name -ne 'bin' -or -not $rootItems[0].PSIsContainer) {
+        throw "Existing runtime root surface differs from the approved layout (exactly one bin directory required): $RuntimeRoot"
+    }
+
+    $binPath = Join-Path $RuntimeRoot 'bin'
+    $actualItems = @(Get-ChildItem -LiteralPath $binPath -Force)
+    $actualNames = @($actualItems | ForEach-Object { $_.Name })
     $nameDiff = @(Compare-Object -ReferenceObject ($required | Sort-Object) -DifferenceObject ($actualNames | Sort-Object))
-    if ($nameDiff.Count -ne 0) {
-        throw "Existing runtime surface differs from the approved installed_files set: $BinPath"
+    $nonFiles = @($actualItems | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
+    if ($nameDiff.Count -ne 0 -or $nonFiles.Count -ne 0) {
+        throw "Existing runtime bin surface differs from the approved installed_files set: $binPath"
     }
 
     foreach ($name in $required) {
@@ -55,8 +63,11 @@ function Assert-ExistingRuntime {
         if ($null -eq $filePin) {
             throw "Required file '$name' is not present in the provenance pin."
         }
-        $path = Join-Path $BinPath $name
-        $item = Get-Item -LiteralPath $path
+        $path = Join-Path $binPath $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Required runtime path is not a regular file: $path"
+        }
+        $item = Get-Item -LiteralPath $path -Force
         $hash = Get-FileSha256 -Path $path
         if ($item.Length -ne [int64]$filePin.size_bytes -or $hash -ne ([string]$filePin.sha256).ToLowerInvariant()) {
             throw "Existing runtime file does not match pin: $path"
@@ -82,6 +93,9 @@ if ($pin.schema -ne 'hello-approval/upstream-pin/v1') {
 }
 if ($pin.installation_policy.target_architecture -ne 'x86_64-pc-windows-msvc') {
     throw "This installer slice only supports x86_64-pc-windows-msvc; pin says $($pin.installation_policy.target_architecture)."
+}
+if ($pin.installation_policy.allowed_distribution -ne 'zip-manual-placement') {
+    throw "This installer slice only supports zip-manual-placement; pin says $($pin.installation_policy.allowed_distribution)."
 }
 $validDispositions = @('required', 'unused', 'excluded')
 $invalidDispositions = @($pin.files | Where-Object { $validDispositions -notcontains $_.policy.disposition } | ForEach-Object { $_.name })
@@ -152,7 +166,7 @@ try {
     $binPath = Join-Path $runtimeRoot 'bin'
 
     if (Test-Path -LiteralPath $runtimeRoot) {
-        Assert-ExistingRuntime -BinPath $binPath -Pin $pin
+        Assert-ExistingRuntime -RuntimeRoot $runtimeRoot -Pin $pin
         Write-Host "Pinned runtime is already installed and matches the provenance pin: $runtimeRoot"
         return
     }
@@ -190,12 +204,9 @@ try {
             }
         }
 
-        Assert-ExistingRuntime -BinPath $stagingBin -Pin $pin
+        Assert-ExistingRuntime -RuntimeRoot $stagingRoot -Pin $pin
 
-        if (Test-Path -LiteralPath $runtimeRoot) {
-            throw "Runtime destination appeared during install; refusing to overwrite: $runtimeRoot"
-        }
-        Move-Item -LiteralPath $stagingRoot -Destination $runtimeRoot
+        [System.IO.Directory]::Move($stagingRoot, $runtimeRoot)
         Write-Host "Installed verified runtime: $runtimeRoot"
     } catch {
         if (Test-Path -LiteralPath $stagingRoot) {
