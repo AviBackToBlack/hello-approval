@@ -82,21 +82,27 @@ try {
     $runtimeBin = Join-Path $runtimeRoot 'bin'
     $expectedPipe = '\\.\pipe\sshenc-github-signing'
     $expectedPipeName = 'sshenc-github-signing'
-    $configPath = Join-Path $env:APPDATA 'sshenc\config.toml'
+    $configCandidates = @(
+        (Join-Path $env:APPDATA 'sshenc\config.toml'),
+        (Join-Path $env:USERPROFILE '.config\sshenc\config.toml')
+    ) | Select-Object -Unique
+    $configPath = $null
     $sshConfigPath = Join-Path $env:USERPROFILE '.ssh\config'
 
     Add-Finding -Severity 'INFO' -Check 'runtime.root' -Message 'Expected pinned runtime root.' -Value $runtimeRoot
-    Add-Finding -Severity 'INFO' -Check 'sshenc.config' -Message 'Expected upstream sshenc config path.' -Value $configPath
     Add-Finding -Severity 'INFO' -Check 'agent.pipe' -Message 'Expected dedicated signing pipe.' -Value $expectedPipe
 
     $requiredFiles = @($pin.installation_policy.installed_files)
+    $runtimeVerified = $false
     if (Test-Path -LiteralPath $runtimeBin -PathType Container) {
+        $runtimeProblems = 0
         $unexpected = @(
             Get-ChildItem -LiteralPath $runtimeBin -File |
                 Where-Object { $requiredFiles -notcontains $_.Name } |
                 Select-Object -ExpandProperty Name
         )
         if ($unexpected.Count -gt 0) {
+            $runtimeProblems++
             Add-Finding -Severity 'BLOCK' -Check 'runtime.surface' -Message 'Runtime bin directory contains files outside the approved surface.' -Value ($unexpected -join ', ')
         }
 
@@ -104,23 +110,43 @@ try {
             $path = Join-Path $runtimeBin $name
             $filePin = $pin.files | Where-Object { $_.name -eq $name } | Select-Object -First 1
             if ($null -eq $filePin) {
+                $runtimeProblems++
                 Add-Finding -Severity 'BLOCK' -Check "runtime.$name" -Message 'Required runtime file is missing from provenance pin.'
                 continue
             }
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                $runtimeProblems++
                 Add-Finding -Severity 'BLOCK' -Check "runtime.$name" -Message 'Pinned runtime directory exists but a required file is missing.' -Value $path
                 continue
             }
             $item = Get-Item -LiteralPath $path
             $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
             if (($item.Length -ne [int64]$filePin.size_bytes) -or ($hash -ne ([string]$filePin.sha256).ToLowerInvariant())) {
+                $runtimeProblems++
                 Add-Finding -Severity 'BLOCK' -Check "runtime.$name" -Message 'Existing runtime file does not match the provenance pin.' -Value $path
             } else {
                 Add-Finding -Severity 'PASS' -Check "runtime.$name" -Message 'Existing runtime file matches the provenance pin.' -Value $path
             }
         }
+        $runtimeVerified = ($runtimeProblems -eq 0)
     } else {
         Add-Finding -Severity 'INFO' -Check 'runtime.surface' -Message 'Pinned runtime is not installed yet.' -Value $runtimeBin
+    }
+
+    if ($runtimeVerified) {
+        $sshencPath = Join-Path $runtimeBin 'sshenc.exe'
+        try {
+            $resolvedConfig = & $sshencPath config path 2>$null
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace(($resolvedConfig -join ''))) {
+                throw 'sshenc config path returned no usable path.'
+            }
+            $configPath = ($resolvedConfig | Select-Object -First 1).Trim()
+            Add-Finding -Severity 'PASS' -Check 'sshenc.config.path' -Message 'Resolved authoritative sshenc config path through the pinned binary.' -Value $configPath
+        } catch {
+            Add-Finding -Severity 'BLOCK' -Check 'sshenc.config.path' -Message 'Could not resolve config path through the verified pinned sshenc.exe.' -Value $_.Exception.Message
+        }
+    } else {
+        Add-Finding -Severity 'INFO' -Check 'sshenc.config.path' -Message 'Pinned runtime is not yet verified; inspecting common config candidates until sshenc.exe can resolve the authoritative path.' -Value ($configCandidates -join '; ')
     }
 
     foreach ($target in @('Process', 'User')) {
@@ -163,13 +189,27 @@ try {
             })
         }
     } catch {
-        Add-Finding -Severity 'WARN' -Check 'stock-ssh-agent' -Message 'Could not query stock ssh-agent service state.' -Value $_.Exception.Message
+        try {
+            $svcFallback = Get-Service -Name 'ssh-agent' -ErrorAction Stop
+            Add-Finding -Severity 'INFO' -Check 'stock-ssh-agent' -Message 'Observed stock ssh-agent state through non-CIM fallback; hello-approval will not change it.' -Value ([pscustomobject]@{
+                state      = [string]$svcFallback.Status
+                start_mode = [string]$svcFallback.StartType
+            })
+        } catch {
+            Add-Finding -Severity 'WARN' -Check 'stock-ssh-agent' -Message 'Could not query stock ssh-agent service state.' -Value $_.Exception.Message
+        }
     }
 
-    if (Test-Path -LiteralPath $configPath -PathType Leaf) {
-        Add-Finding -Severity 'WARN' -Check 'sshenc.config.existing' -Message 'An sshenc config already exists. It is shared user state and must be reconciled explicitly; do not overwrite it by default.' -Value $configPath
+    $pathsToInspect = @($configCandidates)
+    if (-not [string]::IsNullOrWhiteSpace($configPath)) {
+        $pathsToInspect += $configPath
+    }
+    $pathsToInspect = @($pathsToInspect | Select-Object -Unique)
+    $existingConfigs = @($pathsToInspect | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+    if ($existingConfigs.Count -gt 0) {
+        Add-Finding -Severity 'WARN' -Check 'sshenc.config.existing' -Message 'Existing sshenc config state was found. It is shared user state and must be reconciled explicitly; do not overwrite it by default.' -Value ($existingConfigs -join '; ')
     } else {
-        Add-Finding -Severity 'PASS' -Check 'sshenc.config.existing' -Message 'No existing sshenc config was found.' -Value $configPath
+        Add-Finding -Severity 'PASS' -Check 'sshenc.config.existing' -Message 'No sshenc config was found at the authoritative/common candidate paths.' -Value ($pathsToInspect -join '; ')
     }
 
     if (Test-Path -LiteralPath $sshConfigPath -PathType Leaf) {

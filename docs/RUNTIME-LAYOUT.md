@@ -28,12 +28,12 @@ For the currently pinned `sshenc` release (`v0.6.101`), the default v0.1 layout 
 | `sshenc-agent.exe` | `%LOCALAPPDATA%\hello-approval\runtime\sshenc\v0.6.101\bin\sshenc-agent.exe` |
 | Future logs | `%LOCALAPPDATA%\hello-approval\logs` |
 | Future project state | `%LOCALAPPDATA%\hello-approval\state` |
-| Upstream sshenc config | `%APPDATA%\sshenc\config.toml` |
+| Upstream sshenc config | Path reported by pinned `sshenc.exe config path` |
 | Public signing key | `%USERPROFILE%\.ssh\github-signing.pub` |
 
 Only the runtime tree under `%LOCALAPPDATA%\hello-approval` is owned by this project.
 
-`%APPDATA%\sshenc\config.toml` and `%USERPROFILE%\.ssh` are shared/user-owned locations. Scripts must therefore treat pre-existing content there as user state, never as disposable project state.
+The upstream-resolved sshenc config path and `%USERPROFILE%\.ssh` are shared/user-owned locations. Scripts must therefore treat pre-existing content there as user state, never as disposable project state.
 
 ### Why the runtime path is versioned
 
@@ -65,6 +65,14 @@ It is intentionally an inert verified file-placement operation.
 ## 4. sshenc configuration
 
 The canonical example is [`examples/sshenc/config.toml.example`](../examples/sshenc/config.toml.example).
+
+Do **not** hard-code `%APPDATA%` as the config location. `sshenc` computes its default through Rust `dirs::config_dir()` and falls back to `~/.config` when that platform lookup is unavailable. The authoritative v0.1 location is therefore the output of the pinned binary:
+
+```powershell
+& $SshencExe config path
+```
+
+On a normal Windows profile the pinned v0.6.101 binary resolves under Roaming AppData (`%APPDATA%\sshenc\config.toml`). Upstream also has a `~/.config` fallback when the platform config-directory lookup is unavailable. The project must follow the binary's resolved path instead of assuming either shape.
 
 For v0.1 the policy-bearing values are:
 
@@ -116,7 +124,7 @@ Credential generation remains an explicit/manual acceptance operation and is not
 
 ## 5. Client routing contract
 
-`sshenc.exe` loads `%APPDATA%\sshenc\config.toml` and uses its `socket_path` for client operations.
+`sshenc.exe` loads its platform-resolved default config path (discoverable with `sshenc.exe config path`) and uses that config's `socket_path` for client operations.
 
 Upstream also honors `SSHENC_AGENT_SOCKET` as a higher-precedence client-side override. Therefore production `hello-approval` requires `SSHENC_AGENT_SOCKET` to be unset in both persistent user state and the process environment used for signing.
 
@@ -129,7 +137,7 @@ HA-1.2 will decide how to launch the console-subsystem agent invisibly. HA-1.3 w
 ```text
 sshenc-agent.exe
   --foreground
-  --config %APPDATA%\sshenc\config.toml
+  --config <exact path returned by sshenc.exe config path>
   --socket \\.\pipe\sshenc-github-signing
 ```
 
@@ -161,7 +169,7 @@ The preflight is read-only. It inspects, among other things:
 - process/user `SSHENC_AGENT_SOCKET` overrides;
 - process/user `SSH_AUTH_SOCK` and `GIT_SSH_COMMAND` without changing them;
 - stock Windows `ssh-agent` state;
-- existing `%APPDATA%\sshenc\config.toml`;
+- existing sshenc config at any known candidate path, and the authoritative resolved path once the pinned runtime exists;
 - `~/.ssh/config` for upstream-managed or `IdentityAgent` state;
 - relevant global Git transport/signing configuration.
 
@@ -202,9 +210,9 @@ It deliberately has no "latest" lookup and no package-manager mode.
 
 ## 9. Config installation policy
 
-HA-1.1 ships an example rather than silently overwriting `%APPDATA%\sshenc\config.toml`.
+HA-1.1 ships an example rather than silently overwriting the upstream-resolved sshenc config path.
 
-If no upstream config exists, the example may be copied to that exact path after review. If a config already exists, it must be reconciled explicitly; a future helper may create/compare it idempotently, but must not replace a differing file by default.
+If no upstream config exists, first resolve the path with the pinned `sshenc.exe config path`, then copy the example to that exact path after review. If a config already exists, it must be reconciled explicitly; a future helper may create/compare it idempotently, but must not replace a differing file by default.
 
 This preserves the project rule that shared user configuration is never destructively claimed merely because `hello-approval` is being installed.
 

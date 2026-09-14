@@ -1,5 +1,5 @@
 # hello-approval v0.1 sshenc configuration.
-# Production location on Windows: %APPDATA%\sshenc\config.toml
+# Install at the path reported by the pinned `sshenc.exe config path`.
 #
 # This file intentionally isolates signing from the stock Windows OpenSSH
 # authentication agent. Do not replace this pipe with openssh-ssh-agent.
