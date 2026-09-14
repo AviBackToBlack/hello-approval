@@ -138,3 +138,7 @@ Implementation sequencing is tracked in [ROADMAP.md](ROADMAP.md).
 This repository is a reference implementation, not a formal security audit of Windows Hello, WebAuthn, TPM, OpenSSH, Git, GitHub, or `sshenc`.
 
 The upstream `sshenc` project and release provenance must be evaluated independently. Pinning and checksum verification are part of the intended implementation, but upstream release binaries should not be treated as trusted merely because this repository uses them.
+
+For the currently audited `sshenc` v0.6.101 Windows release, `hello-approval` deliberately prefers the ZIP/manual-binary path over the MSI/WinGet installer path. The upstream MSI runs `sshenc install` as an installation custom action, while that command may alter the stock Windows `ssh-agent` service and persistent SSH/Git environment integration. Those mutations violate this project's isolation invariants.
+
+The audited v0.6.101 x86_64 Windows `sshenc.exe` is also not Authenticode-signed. That is a point-in-time provenance limitation, not a claim about every future release; each pinned upgrade must re-check it. A matching SHA-256 digest establishes asset identity, not trustworthiness.

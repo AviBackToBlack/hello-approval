@@ -14,9 +14,11 @@ The implementation is intentionally sliced into small reviewable changes. No pha
 ### HA-0.2: Upstream/provenance research gate
 
 - Re-check current `sshenc` release/version behavior.
-- Document release provenance limitations.
-- Decide pin/checksum source and upgrade policy.
-- Confirm relevant Windows/WebAuthn assumptions against upstream/current platform behavior.
+- Document release provenance limitations, including Windows Authenticode status.
+- Inspect upstream Windows packaging and installer side effects; never assume the installer is inert.
+- Confirm the exact shipped binary surface (`sshenc.exe`, `sshenc-agent.exe`, and related tools) for the pinned release.
+- Decide pin/checksum source, archive-vs-installer acquisition policy, and upgrade policy.
+- Re-test relevant Windows/WebAuthn/TPM assumptions and known fragility against the pinned release.
 
 ## Phase 1 — Git reference integration
 
@@ -25,11 +27,14 @@ The implementation is intentionally sliced into small reviewable changes. No pha
 - Define deterministic per-user paths.
 - Add `config.toml.example`.
 - Define dedicated named pipe and signing-label policy.
-- Never alter stock `ssh-agent`, `SSH_AUTH_SOCK`, or `GIT_SSH_COMMAND`.
+- Use an inert/manual binary placement path for the pinned release; do not use an installer that invokes `sshenc install`.
+- Preflight existing stock-agent, SSH environment, and Git transport state before any mutation.
+- Never alter stock `ssh-agent`, persistent `SSH_AUTH_SOCK`, or `GIT_SSH_COMMAND`.
 
 ### HA-1.2: Invisible interactive agent launcher
 
 - Research and implement the smallest reliable launcher/wrapper.
+- Evaluate candidate mechanisms before freezing one: a hidden PowerShell wrapper that waits for the child, a headless console host if support is suitable, or a tiny native launcher using explicit Windows process-creation flags.
 - Keep the process in the interactive user session.
 - Prevent a persistent console window.
 - Preserve lifecycle supervision, restart behavior, exit observability, and logs.
@@ -66,11 +71,13 @@ The implementation is intentionally sliced into small reviewable changes. No pha
 - Verify GitHub API reports `verified=true` and `reason=valid`.
 - Document GitHub-generated signing versus locally generated signing.
 
-### HA-1.7: Doctor and rollback
+### HA-1.7: Doctor, revocation, and rollback
 
 - Read-only diagnostics first.
 - Detect stock-agent mutation/collision.
 - Detect config/task/path mismatch.
+- Document dead/lost credential replacement and trust-store rotation.
+- Document GitHub signing-key removal and local `allowed_signers` lifecycle without pretending they provide universal historical revocation semantics.
 - Conservative cleanup with explicit credential-removal handling.
 
 ## Phase 2 — Hardening

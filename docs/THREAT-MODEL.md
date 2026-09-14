@@ -49,7 +49,8 @@ The project does **not** claim protection against:
 - kernel-level compromise;
 - physical attacks outside the platform authenticator's actual guarantees;
 - compromise of a GitHub/account recovery path;
-- social engineering that tricks the user into approving a misleading subject.
+- social engineering that tricks the user into approving a misleading subject;
+- prompt-flooding or prompt-fatigue attacks from software able to invoke the local signing path.
 
 `TPM-backed` is not synonymous with `safe on a compromised host`.
 
@@ -60,6 +61,24 @@ A cryptographic signature proves possession/use of a credential under its protoc
 For generic approval workflows, the system therefore needs a trustworthy presentation layer that shows the human a stable, meaningful representation of the signed statement before Windows Hello confirmation.
 
 This is intentionally deferred beyond the Git-focused v0.1, where Git itself defines the signed object semantics.
+
+A Windows Hello prompt establishes platform-defined user verification/presence; it does not by itself establish that the user understood the caller's intent. Same-user malware may also be able to generate repeated prompts. Future generic-approval work should therefore evaluate prompt rate limiting/backoff and must present the canonical statement being approved through a trustworthy UI path rather than training users to approve unexplained prompts.
+
+## Credential loss, availability, and revocation
+
+A hardware-bound/non-exportable credential improves resistance to accidental key copying, but it also changes the recovery model. Device loss, TPM reset/clear, profile rebuild, credential corruption, or platform-authenticator re-enrollment may make a signing credential permanently unavailable.
+
+That is an availability property, not a confidentiality failure. The design must assume that private signing material may be unrecoverable and must provide a replacement procedure based on creating a new credential and rotating public trust state rather than restoring the old private key.
+
+At minimum, recovery/retirement documentation must cover:
+
+- provisioning a replacement credential and public key;
+- removing or retiring a dead/compromised GitHub Signing Key;
+- updating local `allowed_signers` and any future verifier trust stores;
+- distinguishing current trust from verification of historical signatures;
+- documenting effective revocation semantics instead of implying that deleting a key retroactively invalidates every historical signature everywhere.
+
+`allowed_signers` is a local trust mapping, not a universal revocation service. Hosting-platform behavior for historical signatures is also platform policy and must be documented/tested rather than assumed. Future generic-approval verifiers should define explicit key lifecycle and, where needed, effective revocation times.
 
 ## Replay and cross-purpose misuse
 
@@ -93,6 +112,11 @@ The implementation should support:
 - explicit version pinning;
 - cryptographic checksum verification;
 - documented provenance limitations;
-- reproducible inspection of what is being installed where practical.
+- reproducible inspection of what is being installed where practical;
+- explicit verification of installer side effects and executable-signing state for each pinned upgrade.
+
+For the audited v0.6.101 x86_64 Windows ZIP, `sshenc.exe` has no PE Authenticode certificate table. The upstream release workflow visibly configures macOS signing but not Windows Authenticode signing. Treat this as a point-in-time finding to re-check on upgrade, not a permanent property of the project.
+
+The upstream v0.6.101 MSI also invokes `sshenc install` automatically. Because that command can modify the stock Windows `ssh-agent` service and persistent SSH/Git environment state, the MSI/WinGet path is outside the v0.1 installation boundary.
 
 A checksum proves that a downloaded asset matches the expected asset; it does not prove that the asset itself is trustworthy.

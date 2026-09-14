@@ -76,7 +76,7 @@ The reference integration must not:
 
 - run `sshenc install`;
 - stop or disable the stock Windows OpenSSH Authentication Agent;
-- overwrite `SSH_AUTH_SOCK` as a production mechanism;
+- overwrite persistent `SSH_AUTH_SOCK` as a production mechanism;
 - modify `GIT_SSH_COMMAND`;
 - expose unrelated authentication credentials through the signing agent.
 
@@ -86,6 +86,16 @@ Instead, `sshenc-agent` uses:
 - an allow-listed signing label;
 - per-user configuration;
 - an interactive per-user Scheduled Task.
+
+On Windows, the `SSH_AUTH_SOCK` guardrail is still intentional even though the value names a Windows pipe rather than a Unix-domain socket. Upstream `sshenc install` writes persistent user environment integration, while `sshenc`'s own client can address its configured agent channel directly. `hello-approval` therefore does not need to repoint unrelated SSH consumers globally.
+
+### Upstream packaging boundary
+
+The upstream Windows installer is not an inert file-copy mechanism. In the audited v0.6.101 source, the WiX MSI runs `sshenc.exe install` as a deferred custom action after installing files. The corresponding Windows integration code can stop/disable the stock `ssh-agent` service and set persistent user `SSH_AUTH_SOCK` and `GIT_SSH_COMMAND` values.
+
+Those side effects violate this project's isolation invariants. Until upstream provides an installer mode whose behavior is proven compatible, v0.1 must use a pinned ZIP/manual-binary placement path with checksum verification and must not run `sshenc install`. WinGet is also unsuitable when its manifest resolves to that MSI.
+
+This packaging decision is about avoiding unwanted integration mutations; it does not make the ZIP intrinsically trustworthy.
 
 ## 6. Interactive-session requirement
 
@@ -110,7 +120,9 @@ The v0.1 launcher design must satisfy all of the following:
 7. stdout/stderr are redirected to controlled log files or another explicit sink;
 8. no SYSTEM/service-account workaround is used merely to hide the window.
 
-A hidden PowerShell wrapper is a candidate implementation, not yet a frozen architecture decision. It must be acceptance-tested because simply spawning a detached child would cause Task Scheduler to supervise the wrapper rather than the long-lived agent.
+Candidate mechanisms include a hidden PowerShell wrapper that remains alive and waits for the agent, a headless-console mechanism if its Windows support contract is suitable, or a tiny native launcher that uses explicit process-creation flags. None is selected yet.
+
+Any candidate must be acceptance-tested because simply spawning a detached child would cause Task Scheduler to supervise the wrapper rather than the long-lived agent.
 
 ## 8. Generic approval model
 
@@ -143,7 +155,7 @@ gpg.format = ssh
 gpg.ssh.program = <path-to-sshenc.exe>
 user.signingkey = <path-to-public-key>
 commit.gpgsign = true
-tag.gpgSign = true
+tag.gpgsign = true
 ```
 
 Local verification additionally uses an `allowed_signers` file.
@@ -160,7 +172,8 @@ Safe to automate after state checks:
 - Git signing configuration;
 - local verification setup;
 - diagnostics and acceptance checks;
-- checksum verification of pinned downloads.
+- checksum verification of pinned downloads;
+- inert/manual placement of already-verified binaries.
 
 Keep explicit/manual or confirmation-gated:
 
