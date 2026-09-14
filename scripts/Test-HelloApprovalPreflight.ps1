@@ -77,6 +77,21 @@ try {
         Add-Finding -Severity 'PASS' -Check 'pin.schema' -Message 'Provenance pin schema is supported.' -Value $pin.schema
     }
 
+    $validDispositions = @('required', 'unused', 'excluded')
+    $invalidDispositions = @($pin.files | Where-Object { $validDispositions -notcontains $_.policy.disposition } | ForEach-Object { $_.name })
+    if ($invalidDispositions.Count -gt 0) {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.policy.disposition' -Message 'Pin contains unsupported policy dispositions.' -Value ($invalidDispositions -join ', ')
+    } else {
+        Add-Finding -Severity 'PASS' -Check 'pin.policy.disposition' -Message 'All file dispositions are within the v1 policy enum.'
+    }
+    $requiredByPolicy = @($pin.files | Where-Object { $_.policy.disposition -eq 'required' } | ForEach-Object { $_.name } | Sort-Object)
+    $installedByPolicy = @($pin.installation_policy.installed_files | Sort-Object)
+    if (@(Compare-Object -ReferenceObject $requiredByPolicy -DifferenceObject $installedByPolicy).Count -gt 0) {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.policy.installed-files' -Message 'Pin installed_files does not exactly match files with disposition=required.' -Value ([pscustomobject]@{ required = $requiredByPolicy; installed = $installedByPolicy })
+    } else {
+        Add-Finding -Severity 'PASS' -Check 'pin.policy.installed-files' -Message 'Pin required-file policy matches installed_files exactly.'
+    }
+
     $releaseTag = [string]$pin.upstream.release_tag
     $runtimeRoot = Join-Path $env:LOCALAPPDATA ("hello-approval\runtime\sshenc\{0}" -f $releaseTag)
     $runtimeBin = Join-Path $runtimeRoot 'bin'
@@ -218,7 +233,7 @@ try {
 
     if (Test-Path -LiteralPath $sshConfigPath -PathType Leaf) {
         $sshConfig = Get-Content -LiteralPath $sshConfigPath -Raw
-        if ($sshConfig -match '(?im)sshenc-managed') {
+        if ($sshConfig -match '(?im)(sshenc-managed|BEGIN\s+sshenc\s+managed\s+block)') {
             Add-Finding -Severity 'BLOCK' -Check 'ssh.config.upstream-managed' -Message 'SSH config contains an upstream sshenc-managed block. Reconcile prior upstream integration before proceeding.' -Value $sshConfigPath
         }
         if ($sshConfig -match '(?im)^\s*IdentityAgent\s+') {

@@ -83,6 +83,16 @@ if ($pin.schema -ne 'hello-approval/upstream-pin/v1') {
 if ($pin.installation_policy.target_architecture -ne 'x86_64-pc-windows-msvc') {
     throw "This installer slice only supports x86_64-pc-windows-msvc; pin says $($pin.installation_policy.target_architecture)."
 }
+$validDispositions = @('required', 'unused', 'excluded')
+$invalidDispositions = @($pin.files | Where-Object { $validDispositions -notcontains $_.policy.disposition } | ForEach-Object { $_.name })
+if ($invalidDispositions.Count -gt 0) {
+    throw "Unsupported file policy disposition(s) in pin: $($invalidDispositions -join ', ')"
+}
+$requiredByPolicy = @($pin.files | Where-Object { $_.policy.disposition -eq 'required' } | ForEach-Object { $_.name } | Sort-Object)
+$installedByPolicy = @($pin.installation_policy.installed_files | Sort-Object)
+if (@(Compare-Object -ReferenceObject $requiredByPolicy -DifferenceObject $installedByPolicy).Count -gt 0) {
+    throw 'Pin inconsistency: installed_files must exactly match files with policy.disposition=required.'
+}
 
 if (-not [System.IO.File]::Exists($ArchivePath)) {
     throw "Archive does not exist: $ArchivePath"
