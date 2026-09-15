@@ -106,3 +106,16 @@ Before merge, acceptance must establish on Windows that:
 - the real Windows Hello/WebAuthn signing prompt still appears through this hidden launch path on the production user session.
 
 The last item cannot be established on a non-interactive automation VM without the production Hello credential; it is a real-machine acceptance gate, not something the VM test should simulate.
+
+### Production acceptance evidence
+
+On 2026-09-15, the HA-1.2 launcher passed the production interactive-user acceptance on the real Windows host and production `github-signing` ECDSA-SK credential:
+
+- the hidden PowerShell wrapper and `sshenc-agent.exe` both ran in interactive session `1`;
+- both processes reported `MainWindowHandle = 0`;
+- the dedicated production signing pipe was usable through the hidden launch path;
+- a local disposable `git commit -S` completed successfully with the production hardware-backed credential;
+- `git verify-commit` and `git log --show-signature` both reported a good SSH signature for the expected Git signing principal;
+- the acceptance harness restored the prior production Scheduled Task in its `finally` cleanup path.
+
+Together with the VM lifecycle/failure-injection acceptance above, this closes the HA-1.2 runtime acceptance gate. Review of the implementation remains a separate merge gate.
