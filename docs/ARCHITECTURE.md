@@ -158,9 +158,9 @@ The first integration configures Git signing only:
 gpg.format = ssh
 gpg.ssh.program = <path-to-sshenc.exe>
 user.signingkey = <path-to-public-key>
-commit.gpgsign = true
-tag.gpgsign = true
 ```
+
+`commit.gpgsign = true` and `tag.gpgsign = true` are separate opt-in settings and are written only after explicit user intent. HA-1.4 keeps author identity (`user.name` / `user.email`) separate and uses a project-owned global include fragment so conflicting pre-existing user settings are preserved rather than silently overwritten. See [Git signing configuration](GIT-CONFIG.md).
 
 Local verification additionally uses an `allowed_signers` file.
 
