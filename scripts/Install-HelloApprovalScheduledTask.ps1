@@ -90,6 +90,79 @@ function Assert-PinnedFile {
     return $resolved
 }
 
+function Assert-PinnedRuntimeSurface {
+    param(
+        [Parameter(Mandatory = $true)][string]$RuntimeRoot,
+        [Parameter(Mandatory = $true)][object]$Pin
+    )
+
+    Assert-RealDirectory -Path $RuntimeRoot -Purpose 'Pinned runtime root'
+    $rootItems = @(Get-ChildItem -LiteralPath $RuntimeRoot -Force)
+    if ($rootItems.Count -ne 1 -or $rootItems[0].Name -ne 'bin' -or -not $rootItems[0].PSIsContainer -or ($rootItems[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Pinned runtime root surface must contain exactly one real bin directory: $RuntimeRoot"
+    }
+
+    $binPath = Join-Path $RuntimeRoot 'bin'
+    $required = @($Pin.installation_policy.installed_files)
+    $actualItems = @(Get-ChildItem -LiteralPath $binPath -Force)
+    $actualNames = @($actualItems | ForEach-Object { $_.Name })
+    $nameDiff = @(Compare-Object -ReferenceObject ($required | Sort-Object) -DifferenceObject ($actualNames | Sort-Object))
+    $nonFiles = @($actualItems | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
+    if ($nameDiff.Count -ne 0 -or $nonFiles.Count -ne 0) {
+        throw "Pinned runtime bin surface differs from installation_policy.installed_files: $binPath"
+    }
+
+    foreach ($name in $required) {
+        $filePin = $Pin.files | Where-Object { $_.name -eq $name -and $_.policy.disposition -eq 'required' } | Select-Object -First 1
+        if ($null -eq $filePin) {
+            throw "Required runtime file '$name' has no required provenance record."
+        }
+        [void](Assert-PinnedFile -Path (Join-Path $binPath $name) -FilePin $filePin)
+    }
+}
+
+function Assert-EffectiveConfig {
+    param([Parameter(Mandatory = $true)][string]$SshencPath)
+
+    $lines = @(& $SshencPath config show 2>&1 | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
+    if ($LASTEXITCODE -ne 0) {
+        throw "Pinned sshenc.exe config show failed with exit $LASTEXITCODE."
+    }
+
+    $values = @{}
+    foreach ($line in $lines) {
+        $parts = $line -split '=', 2
+        if ($parts.Count -eq 2) {
+            $values[$parts[0].Trim()] = $parts[1].Trim()
+        }
+    }
+
+    foreach ($requiredKey in @('socket_path', 'allowed_labels', 'prompt_policy')) {
+        if (-not $values.ContainsKey($requiredKey)) {
+            throw "Effective sshenc config is missing required key '$requiredKey'."
+        }
+    }
+
+    $socketValue = [string]$values['socket_path']
+    if ($socketValue.Length -lt 2 -or $socketValue[0] -ne "'" -or $socketValue[$socketValue.Length - 1] -ne "'") {
+        throw "Effective sshenc socket_path is not in the expected canonical literal form: $socketValue"
+    }
+    $effectiveSocket = $socketValue.Substring(1, $socketValue.Length - 2)
+    if ($effectiveSocket -ne $SocketPath) {
+        throw "Effective sshenc socket_path must be '$SocketPath', got '$effectiveSocket'."
+    }
+
+    $labelsValue = ([string]$values['allowed_labels']) -replace '\s', ''
+    if ($labelsValue -ne '["github-signing"]') {
+        throw "Effective sshenc allowed_labels must contain exactly github-signing, got '$($values['allowed_labels'])'."
+    }
+
+    $promptValue = [string]$values['prompt_policy']
+    if ($promptValue -ne '"always"') {
+        throw "Effective sshenc prompt_policy must be always, got '$promptValue'."
+    }
+}
+
 function Quote-WindowsArgument {
     param([Parameter(Mandatory = $true)][string]$Value)
 
@@ -242,22 +315,16 @@ if ($pin.installation_policy.target_architecture -ne 'x86_64-pc-windows-msvc') {
 $releaseTag = [string]$pin.upstream.release_tag
 $runtimeRoot = Join-Path $env:LOCALAPPDATA ("hello-approval\runtime\sshenc\{0}" -f $releaseTag)
 $runtimeBin = Join-Path $runtimeRoot 'bin'
-Assert-RealDirectory -Path $runtimeRoot -Purpose 'Pinned runtime root'
-Assert-RealDirectory -Path $runtimeBin -Purpose 'Pinned runtime bin'
-
-$sshencPin = $pin.files | Where-Object { $_.name -eq 'sshenc.exe' -and $_.policy.disposition -eq 'required' } | Select-Object -First 1
-$agentPin = $pin.files | Where-Object { $_.name -eq 'sshenc-agent.exe' -and $_.policy.disposition -eq 'required' } | Select-Object -First 1
-if ($null -eq $sshencPin -or $null -eq $agentPin) {
-    throw 'Provenance pin does not contain both required v0.1 runtime files.'
-}
-$sshencPath = Assert-PinnedFile -Path (Join-Path $runtimeBin 'sshenc.exe') -FilePin $sshencPin
-$agentPath = Assert-PinnedFile -Path (Join-Path $runtimeBin 'sshenc-agent.exe') -FilePin $agentPin
+Assert-PinnedRuntimeSurface -RuntimeRoot $runtimeRoot -Pin $pin
+$sshencPath = Assert-RegularFile -Path (Join-Path $runtimeBin 'sshenc.exe') -Purpose 'Pinned sshenc.exe'
+$agentPath = Assert-RegularFile -Path (Join-Path $runtimeBin 'sshenc-agent.exe') -Purpose 'Pinned sshenc-agent.exe'
 
 $configOutput = @(& $sshencPath config path 2>&1 | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
 if ($LASTEXITCODE -ne 0 -or $configOutput.Count -ne 1) {
     throw "Pinned sshenc.exe did not return exactly one config path (exit=$LASTEXITCODE, lines=$($configOutput.Count))."
 }
 $configPath = Assert-RegularFile -Path $configOutput[0] -Purpose 'sshenc config'
+Assert-EffectiveConfig -SshencPath $sshencPath
 
 $sourceLauncher = Assert-RegularFile -Path $sourceLauncher -Purpose 'Repository HA-1.2 launcher'
 $launcherHash = Get-FileSha256 -Path $sourceLauncher
@@ -266,6 +333,17 @@ $appRoot = Join-Path $projectRoot 'app'
 $launcherRoot = Join-Path $appRoot 'launcher'
 $launcherVersionRoot = Join-Path $launcherRoot $launcherHash
 $installedLauncher = Join-Path $launcherVersionRoot 'Start-HelloApprovalAgent.ps1'
+
+# Detect a same-name foreign task before making any hello-approval filesystem mutation.
+$existingTask = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
+$existingXmlText = $null
+$wasRunning = $false
+if ($null -ne $existingTask) {
+    $existingXml = Get-TaskXml -Name $TaskName
+    Assert-OwnedTask -Xml $existingXml
+    $existingXmlText = $existingXml.OuterXml
+    $wasRunning = $existingTask.State -eq 'Running'
+}
 
 if (Test-Path -LiteralPath $launcherVersionRoot) {
     Assert-RealDirectory -Path $launcherVersionRoot -Purpose 'Installed launcher digest directory'
@@ -321,15 +399,8 @@ $trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
 $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
-$existingTask = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
-$existingXmlText = $null
-$wasRunning = $false
 $needsRegistration = $true
 if ($null -ne $existingTask) {
-    $existingXml = Get-TaskXml -Name $TaskName
-    Assert-OwnedTask -Xml $existingXml
-    $existingXmlText = $existingXml.OuterXml
-    $wasRunning = $existingTask.State -eq 'Running'
     $needsRegistration = -not (Test-TaskMatchesDesired -Xml $existingXml -ExpectedSid $currentSid -ExpectedUser $currentUser -ExpectedPowerShell $powershellPath -ExpectedArguments $actionArguments -ExpectedWorkingDirectory $launcherVersionRoot)
 }
 
