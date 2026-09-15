@@ -132,7 +132,7 @@ function New-TaskNamespaceManager {
     param([Parameter(Mandatory = $true)][xml]$Xml)
     $ns = New-Object Xml.XmlNamespaceManager($Xml.NameTable)
     $ns.AddNamespace('t', 'http://schemas.microsoft.com/windows/2004/02/mit/task')
-    return $ns
+    Write-Output -NoEnumerate $ns
 }
 
 function Get-XmlText {
