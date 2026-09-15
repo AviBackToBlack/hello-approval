@@ -124,9 +124,9 @@ The v0.1 launcher design must satisfy all of the following:
 7. stdout/stderr are redirected to controlled log files or another explicit sink;
 8. no SYSTEM/service-account workaround is used merely to hide the window.
 
-Candidate mechanisms include a hidden PowerShell wrapper that remains alive and waits for the agent, a headless-console mechanism if its Windows support contract is suitable, or a tiny native launcher that uses explicit process-creation flags. None is selected yet.
+HA-1.2 selected a hidden Windows PowerShell wrapper that remains alive and supervises `sshenc-agent.exe` through documented Win32 primitives. The wrapper creates the child with `CREATE_NO_WINDOW`, atomically assigns it to a Job Object with `PROC_THREAD_ATTRIBUTE_JOB_LIST`, restricts inherited handles, waits for the child, and relies on `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` so abrupt wrapper termination cannot leave an orphaned agent. The design and production acceptance are documented in [Invisible interactive agent launcher](LAUNCHER.md).
 
-Any candidate must be acceptance-tested because simply spawning a detached child would cause Task Scheduler to supervise the wrapper rather than the long-lived agent.
+HA-1.3 binds that wrapper to an interactive, limited-privilege, per-user Scheduled Task with a user-logon trigger. Task installation/update/uninstall semantics are documented in [Scheduled Task installation](SCHEDULED-TASK.md).
 
 ## 8. Generic approval model
 
