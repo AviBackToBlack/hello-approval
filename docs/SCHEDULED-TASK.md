@@ -74,7 +74,7 @@ The task uses:
 - do not stop merely because the machine switches to battery;
 - task remains visible in Task Scheduler for observability.
 
-The task is not automatically started by a normal install/update. `-StartNow` is explicit because starting the task can collide with a pre-existing signing agent during migration. A user-logon trigger remains the normal steady-state start path.
+The task is not automatically started by a normal install/update. `-StartNow` is explicit because starting the task can collide with a pre-existing signing agent during migration. When requested, `-StartNow` is successful only after Task Scheduler reports the task as running **and** the dedicated named pipe is present; lack of an interactive token therefore fails visibly. A user-logon trigger remains the normal steady-state start path.
 
 ## Idempotent update and rollback
 

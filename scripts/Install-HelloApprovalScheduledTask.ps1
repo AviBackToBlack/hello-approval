@@ -201,6 +201,23 @@ function Wait-TaskNotRunning {
     throw "Timed out waiting for task to stop: $TaskPath$Name"
 }
 
+function Wait-TaskRunningAndPipe {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    $pipeLeaf = ($SocketPath -replace '^\\\\\.\\pipe\\', '')
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        $task = Get-ScheduledTask -TaskName $Name -TaskPath $TaskPath -ErrorAction Stop
+        $pipePresent = @([IO.Directory]::GetFiles('\\.\pipe\') | ForEach-Object { [IO.Path]::GetFileName($_) } | Where-Object { $_ -ieq $pipeLeaf }).Count -gt 0
+        if ($task.State -eq 'Running' -and $pipePresent) { return }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    $info = Get-ScheduledTaskInfo -TaskName $Name -TaskPath $TaskPath -ErrorAction SilentlyContinue
+    $resultText = if ($null -eq $info) { 'unknown' } else { '0x{0:X8}' -f ([uint32]$info.LastTaskResult) }
+    throw "Task did not reach Running state with dedicated pipe within 10 seconds (state=$($task.State), lastResult=$resultText)."
+}
+
 if ($env:OS -ne 'Windows_NT') {
     throw 'Install-HelloApprovalScheduledTask.ps1 supports Windows only.'
 }
@@ -326,6 +343,7 @@ if ($needsRegistration) {
             Register-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description $TaskMarker -Force | Out-Null
             if ($wasRunning -or $StartNow) {
                 Start-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
+                Wait-TaskRunningAndPipe -Name $TaskName
             }
         } catch {
             $originalError = $_
@@ -352,6 +370,9 @@ if ($needsRegistration) {
     $currentTask = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
     if ($currentTask.State -ne 'Running' -and $PSCmdlet.ShouldProcess("$TaskPath$TaskName", 'Start existing owned Scheduled Task')) {
         Start-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
+        Wait-TaskRunningAndPipe -Name $TaskName
+    } elseif ($currentTask.State -eq 'Running') {
+        Wait-TaskRunningAndPipe -Name $TaskName
     }
 }
 
