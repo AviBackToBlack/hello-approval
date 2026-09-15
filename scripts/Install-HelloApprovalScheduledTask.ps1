@@ -98,7 +98,7 @@ function Assert-PinnedRuntimeSurface {
 
     Assert-RealDirectory -Path $RuntimeRoot -Purpose 'Pinned runtime root'
     $rootItems = @(Get-ChildItem -LiteralPath $RuntimeRoot -Force)
-    if ($rootItems.Count -ne 1 -or $rootItems[0].Name -ne 'bin' -or -not $rootItems[0].PSIsContainer -or ($rootItems[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    if ($rootItems.Count -ne 1 -or $rootItems[0].Name -cne 'bin' -or -not $rootItems[0].PSIsContainer -or ($rootItems[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw "Pinned runtime root surface must contain exactly one real bin directory: $RuntimeRoot"
     }
 
@@ -121,7 +121,7 @@ function Assert-PinnedRuntimeSurface {
     }
 
     foreach ($name in $required) {
-        $filePin = $Pin.files | Where-Object { $_.name -eq $name -and $_.policy.disposition -eq 'required' } | Select-Object -First 1
+        $filePin = $Pin.files | Where-Object { $_.name -ceq $name -and $_.policy.disposition -eq 'required' } | Select-Object -First 1
         if ($null -eq $filePin) {
             throw "Required runtime file '$name' has no required provenance record."
         }
@@ -160,7 +160,7 @@ function Assert-EffectiveConfig {
         throw "Effective sshenc socket_path must be '$SocketPath', got '$effectiveSocket'."
     }
 
-    $labelsValue = ([string]$values['allowed_labels']) -replace '\s', ''
+    $labelsValue = [string]$values['allowed_labels']
     if ($labelsValue -ne '["github-signing"]') {
         throw "Effective sshenc allowed_labels must contain exactly github-signing, got '$($values['allowed_labels'])'."
     }
@@ -247,13 +247,19 @@ function Test-TaskMatchesDesired {
     )
 
     $ns = New-TaskNamespaceManager -Xml $Xml
+    $actionChildren = @($Xml.SelectNodes('/t:Task/t:Actions/*', $ns))
     $actionNodes = @($Xml.SelectNodes('/t:Task/t:Actions/t:Exec', $ns))
+    $triggerChildren = @($Xml.SelectNodes('/t:Task/t:Triggers/*', $ns))
     $triggerNodes = @($Xml.SelectNodes('/t:Task/t:Triggers/t:LogonTrigger', $ns))
-    if ($actionNodes.Count -ne 1 -or $triggerNodes.Count -ne 1) { return $false }
+    $principalNodes = @($Xml.SelectNodes('/t:Task/t:Principals/t:Principal', $ns))
+    if ($actionChildren.Count -ne 1 -or $actionNodes.Count -ne 1 -or
+        $triggerChildren.Count -ne 1 -or $triggerNodes.Count -ne 1 -or
+        $principalNodes.Count -ne 1) { return $false }
 
     $runLevel = Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Principals/t:Principal/t:RunLevel'
     $taskEnabled = Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Settings/t:Enabled'
     $triggerEnabled = Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Triggers/t:LogonTrigger/t:Enabled'
+    $hidden = Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Settings/t:Hidden'
     $checks = @(
         ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:RegistrationInfo/t:Description') -eq $TaskMarker),
         ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Principals/t:Principal/t:UserId') -eq $ExpectedSid),
@@ -261,6 +267,7 @@ function Test-TaskMatchesDesired {
         (($null -eq $runLevel) -or $runLevel -eq 'LeastPrivilege'),
         (($null -eq $taskEnabled) -or $taskEnabled -eq 'true'),
         (($null -eq $triggerEnabled) -or $triggerEnabled -eq 'true'),
+        (($null -eq $hidden) -or $hidden -eq 'false'),
         ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Triggers/t:LogonTrigger/t:UserId') -eq $ExpectedUser),
         ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Actions/t:Exec/t:Command') -ieq $ExpectedPowerShell),
         ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Actions/t:Exec/t:Arguments') -eq $ExpectedArguments),
@@ -348,7 +355,7 @@ if ($pin.installation_policy.allowed_distribution -ne 'zip-manual-placement') {
 }
 $requiredByPolicy = @($pin.files | Where-Object { $_.policy.disposition -eq 'required' } | ForEach-Object { $_.name } | Sort-Object)
 $installedByPolicy = @($pin.installation_policy.installed_files | Sort-Object)
-if (@(Compare-Object -ReferenceObject $requiredByPolicy -DifferenceObject $installedByPolicy).Count -ne 0) {
+if (@(Compare-Object -ReferenceObject $requiredByPolicy -DifferenceObject $installedByPolicy -CaseSensitive).Count -ne 0) {
     throw 'Pin inconsistency: installed_files must exactly match files with policy.disposition=required.'
 }
 
@@ -395,7 +402,7 @@ foreach ($existingParent in @($appRoot, $launcherRoot)) {
 if (Test-Path -LiteralPath $launcherVersionRoot) {
     Assert-RealDirectory -Path $launcherVersionRoot -Purpose 'Installed launcher digest directory'
     $items = @(Get-ChildItem -LiteralPath $launcherVersionRoot -Force)
-    if ($items.Count -ne 1 -or $items[0].Name -ne 'Start-HelloApprovalAgent.ps1' -or $items[0].PSIsContainer -or ($items[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    if ($items.Count -ne 1 -or $items[0].Name -cne 'Start-HelloApprovalAgent.ps1' -or $items[0].PSIsContainer -or ($items[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw "Installed launcher digest surface is not exact: $launcherVersionRoot"
     }
     $existingHash = Get-FileSha256 -Path $installedLauncher

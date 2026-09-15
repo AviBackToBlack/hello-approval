@@ -73,7 +73,8 @@ The task uses:
 - allow start on battery;
 - do not stop merely because the machine switches to battery;
 - task remains visible in Task Scheduler for observability;
-- the task and its logon trigger must both remain enabled (Task Scheduler omits `<Enabled>` when true by default; an explicit `false` is rejected by verification).
+- the task and its logon trigger must both remain enabled (Task Scheduler omits `<Enabled>` when true by default; an explicit `false` is rejected by verification);
+- the task itself remains visible in Task Scheduler (`<Hidden>` omitted/false; `true` is rejected).
 
 The task is not automatically started by a normal install/update. `-StartNow` is explicit because starting the task can collide with a pre-existing signing agent during migration. Before an explicit start, the dedicated pipe must be free. When requested, `-StartNow` is successful only after Task Scheduler reports the task as running **and** the dedicated named pipe remains present together with `Running` state for a short stability window; lack of an interactive token therefore fails visibly. A user-logon trigger remains the normal steady-state start path.
 
@@ -86,7 +87,7 @@ If an owned task needs an update:
 1. export the existing task XML;
 2. record whether it was running;
 3. stop the running owned task and wait for both scheduler state and the dedicated pipe to clear before replacing its definition;
-4. register and verify the desired definition, including enabled task/trigger state;
+4. register and verify the desired definition, including exactly one principal, one logon trigger, one exec action, enabled task/trigger state, and visible task state;
 5. restart it only if it was running before, or if `-StartNow` was explicitly requested;
 6. if registration/start fails, first stop any possibly-running new-definition instance, wait for its pipe to clear, then restore the previous XML and previous running state where possible.
 
