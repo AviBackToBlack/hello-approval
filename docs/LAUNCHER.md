@@ -20,7 +20,7 @@ The PowerShell process remains alive as the supervised process that Task Schedul
 
 1. create an unnamed Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`;
 2. open project-owned stdout/stderr logs with append-only file access plus an inherited `NUL` stdin handle;
-3. restrict child handle inheritance with `STARTUPINFOEX` / `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` to only stdin/stdout/stderr;
+3. restrict child handle inheritance with `STARTUPINFOEX` / `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` to only stdin/stdout/stderr; this also deliberately prevents the child from inheriting the Job Object handle, which is required for `KILL_ON_JOB_CLOSE` to remain effective when the wrapper exits;
 4. add the Job Object to the same creation attribute list with `PROC_THREAD_ATTRIBUTE_JOB_LIST`;
 5. create `sshenc-agent.exe` with `CREATE_SUSPENDED | CREATE_NO_WINDOW`, so Windows assigns it to the Job Object as part of process creation;
 6. resume the primary thread only after `CreateProcessW` returns successfully;
@@ -74,12 +74,16 @@ The launcher keeps three classes of logs under `%LOCALAPPDATA%\hello-approval\lo
 
 The launcher refuses a log directory outside `%LOCALAPPDATA%\hello-approval`. It validates/creates the project root first, then walks each requested child directory one component at a time, refusing reparse points before traversing or creating through them.
 
+Launcher-owned log leaves (`launcher.log`, `agent.stdout.log`, and `agent.stderr.log`) are opened with `FILE_FLAG_OPEN_REPARSE_POINT`, rejected if the opened object is a reparse point or has more than one hard link, and checked with `GetFinalPathNameByHandleW` against the requested path. The inherited stdout/stderr handles remain open without delete sharing while the child runs. `sshenc-operations.jsonl` is pre-created and validated with the same leaf checks before child creation, then closed because upstream `sshenc` must reopen/rotate that path itself. A same-user process replacing that path after launch is outside the v0.1 threat boundary; pretending otherwise would require breaking upstream rotation or changing upstream logging semantics.
+
 ## Guardrails
 
 The launcher:
 
+- requires absolute paths for `AgentPath`, `ConfigPath`, and any explicit `LogDirectory`;
 - requires a real, non-reparse `sshenc-agent.exe` file;
 - requires a real, non-reparse config file;
+- gives the child an explicit current directory equal to the pinned runtime `bin` directory instead of inheriting Task Scheduler's ambient working directory;
 - always passes `--foreground`;
 - always passes `--config` explicitly;
 - always passes `--socket` explicitly;

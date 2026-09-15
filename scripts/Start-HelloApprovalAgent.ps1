@@ -25,6 +25,9 @@ function Resolve-ExistingRegularFile {
         [Parameter(Mandatory = $true)][string]$Purpose
     )
 
+    if (-not [IO.Path]::IsPathRooted($Path)) {
+        throw "$Purpose path must be absolute: $Path"
+    }
     $full = [IO.Path]::GetFullPath($Path)
     if (-not [IO.File]::Exists($full)) {
         throw "$Purpose does not exist: $full"
@@ -40,6 +43,9 @@ function Assert-ProjectLogDirectory {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     $projectRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'hello-approval'))
+    if (-not [IO.Path]::IsPathRooted($Path)) {
+        throw "LogDirectory path must be absolute: $Path"
+    }
     $full = [IO.Path]::GetFullPath($Path)
     $rootTrimmed = $projectRoot.TrimEnd([IO.Path]::DirectorySeparatorChar)
     $prefix = $rootTrimmed + [IO.Path]::DirectorySeparatorChar
@@ -173,6 +179,8 @@ public static class HelloApprovalSupervisor
     private const uint OPEN_EXISTING = 3;
     private const uint OPEN_ALWAYS = 4;
     private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
+    private const uint FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
+    private const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
     private static readonly IntPtr PROC_THREAD_ATTRIBUTE_HANDLE_LIST = new IntPtr(0x00020002);
     private static readonly IntPtr PROC_THREAD_ATTRIBUTE_JOB_LIST = new IntPtr(0x0002000D);
 
@@ -221,6 +229,21 @@ public static class HelloApprovalSupervisor
         public IntPtr hThread;
         public uint dwProcessId;
         public uint dwThreadId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BY_HANDLE_FILE_INFORMATION
+    {
+        public uint dwFileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ftCreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ftLastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ftLastWriteTime;
+        public uint dwVolumeSerialNumber;
+        public uint nFileSizeHigh;
+        public uint nFileSizeLow;
+        public uint nNumberOfLinks;
+        public uint nFileIndexHigh;
+        public uint nFileIndexLow;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -315,6 +338,15 @@ public static class HelloApprovalSupervisor
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr CreateFileW(string fileName, uint desiredAccess, uint shareMode, ref SECURITY_ATTRIBUTES securityAttributes, uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(IntPtr hFile, out BY_HANDLE_FILE_INFORMATION fileInformation);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandleW(IntPtr hFile, StringBuilder filePath, uint filePathSize, uint flags);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool WriteFile(IntPtr hFile, byte[] buffer, uint bytesToWrite, out uint bytesWritten, IntPtr overlapped);
+
     private static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);
 
     private static void ThrowLastError(string operation)
@@ -332,12 +364,88 @@ public static class HelloApprovalSupervisor
         };
     }
 
-    private static IntPtr OpenAppendLog(string path)
+    private static string NormalizeFinalPath(string path)
+    {
+        if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+            return @"\\" + path.Substring(8);
+        if (path.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+            return path.Substring(4);
+        return path;
+    }
+
+    private static void ValidateOpenedLogHandle(IntPtr handle, string requestedPath)
+    {
+        BY_HANDLE_FILE_INFORMATION info;
+        if (!GetFileInformationByHandle(handle, out info))
+            ThrowLastError("GetFileInformationByHandle(" + requestedPath + ")");
+        if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+            throw new InvalidOperationException("Log leaf must not be a reparse point: " + requestedPath);
+        if (info.nNumberOfLinks != 1)
+            throw new InvalidOperationException("Log leaf must have exactly one hard link: " + requestedPath);
+
+        var finalPath = new StringBuilder(32768);
+        uint length = GetFinalPathNameByHandleW(handle, finalPath, (uint)finalPath.Capacity, 0);
+        if (length == 0 || length >= finalPath.Capacity)
+            ThrowLastError("GetFinalPathNameByHandleW(" + requestedPath + ")");
+        string actual = System.IO.Path.GetFullPath(NormalizeFinalPath(finalPath.ToString()));
+        string expected = System.IO.Path.GetFullPath(requestedPath);
+        if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Log leaf resolved to an unexpected target: " + requestedPath + " -> " + actual);
+    }
+
+    private static IntPtr OpenValidatedLog(string path, bool inheritable)
     {
         var sa = InheritableSecurityAttributes();
-        IntPtr handle = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, ref sa, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+        sa.bInheritHandle = inheritable;
+        IntPtr handle = CreateFileW(
+            path,
+            FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            ref sa,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            IntPtr.Zero);
         if (handle == INVALID_HANDLE_VALUE) ThrowLastError("CreateFileW(" + path + ")");
-        return handle;
+        try
+        {
+            ValidateOpenedLogHandle(handle, path);
+            return handle;
+        }
+        catch
+        {
+            CloseHandle(handle);
+            throw;
+        }
+    }
+
+    public static void ValidateLogLeaf(string path)
+    {
+        IntPtr handle = INVALID_HANDLE_VALUE;
+        try
+        {
+            handle = OpenValidatedLog(path, false);
+        }
+        finally
+        {
+            if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+        }
+    }
+
+    public static void AppendLauncherLog(string path, string line)
+    {
+        IntPtr handle = INVALID_HANDLE_VALUE;
+        try
+        {
+            handle = OpenValidatedLog(path, false);
+            byte[] bytes = Encoding.UTF8.GetBytes(line + Environment.NewLine);
+            uint written;
+            if (!WriteFile(handle, bytes, (uint)bytes.Length, out written, IntPtr.Zero) || written != bytes.Length)
+                ThrowLastError("WriteFile(" + path + ")");
+        }
+        finally
+        {
+            if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+        }
     }
 
     private static IntPtr OpenNullInput()
@@ -348,7 +456,7 @@ public static class HelloApprovalSupervisor
         return handle;
     }
 
-    public static int Run(string executable, string commandLine, string stdoutPath, string stderrPath)
+    public static int Run(string executable, string commandLine, string currentDirectory, string stdoutPath, string stderrPath)
     {
         IntPtr job = IntPtr.Zero;
         IntPtr stdin = INVALID_HANDLE_VALUE;
@@ -381,8 +489,8 @@ public static class HelloApprovalSupervisor
             }
 
             stdin = OpenNullInput();
-            stdout = OpenAppendLog(stdoutPath);
-            stderr = OpenAppendLog(stderrPath);
+            stdout = OpenValidatedLog(stdoutPath, true);
+            stderr = OpenValidatedLog(stderrPath, true);
 
             IntPtr attributeBytes = IntPtr.Zero;
             InitializeProcThreadAttributeList(IntPtr.Zero, 2, 0, ref attributeBytes);
@@ -393,6 +501,10 @@ public static class HelloApprovalSupervisor
                 ThrowLastError("InitializeProcThreadAttributeList");
             attributeListInitialized = true;
 
+            // The allowlist is also part of the lifetime contract: it keeps
+            // the Job Object handle out of the child. If the child inherited
+            // that handle, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE could not fire
+            // when the wrapper exits.
             int handleBytes = IntPtr.Size * 3;
             handleList = Marshal.AllocHGlobal(handleBytes);
             Marshal.WriteIntPtr(handleList, 0 * IntPtr.Size, stdin);
@@ -431,7 +543,7 @@ public static class HelloApprovalSupervisor
             var writableCommandLine = new StringBuilder(commandLine);
             if (!CreateProcessW(executable, writableCommandLine, IntPtr.Zero, IntPtr.Zero, true,
                     CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
-                    IntPtr.Zero, null, ref si, out pi))
+                    IntPtr.Zero, currentDirectory, ref si, out pi))
                 ThrowLastError("CreateProcessW");
 
             // PROC_THREAD_ATTRIBUTE_JOB_LIST makes membership atomic with
@@ -468,7 +580,13 @@ public static class HelloApprovalSupervisor
         Add-Type -TypeDefinition $nativeSource -Language CSharp -ErrorAction Stop
     }
 
-    $args = @(
+    # Pre-create/validate sshenc's path-owned operation log. Upstream opens
+    # this file later by name (and rotates it), so holding our handle for the
+    # child lifetime would break rotation. Same-user replacement after launch
+    # is outside the project threat boundary.
+    [HelloApprovalSupervisor]::ValidateLogLeaf($operationLog)
+
+    $childCommandLine = @(
         (Quote-WindowsArgument -Value $agent),
         '--foreground',
         '--config', (Quote-WindowsArgument -Value $config),
@@ -476,23 +594,26 @@ public static class HelloApprovalSupervisor
     ) -join ' '
 
     $startedAt = [DateTimeOffset]::Now.ToString('o')
-    Add-Content -LiteralPath $launcherLog -Value "$startedAt START agent=$agent config=$config socket=$SocketPath pid=$PID"
+    [HelloApprovalSupervisor]::AppendLauncherLog($launcherLog, "$startedAt START agent=$agent config=$config socket=$SocketPath pid=$PID")
 
-    $exitCode = [HelloApprovalSupervisor]::Run($agent, $args, $stdoutLog, $stderrLog)
+    $childCurrentDirectory = [IO.Path]::GetDirectoryName($agent)
+    $exitCode = [HelloApprovalSupervisor]::Run($agent, $childCommandLine, $childCurrentDirectory, $stdoutLog, $stderrLog)
 
     $endedAt = [DateTimeOffset]::Now.ToString('o')
-    Add-Content -LiteralPath $launcherLog -Value "$endedAt EXIT code=$exitCode pid=$PID"
+    [HelloApprovalSupervisor]::AppendLauncherLog($launcherLog, "$endedAt EXIT code=$exitCode pid=$PID")
     exit $exitCode
 } catch {
     if (-not [string]::IsNullOrWhiteSpace($launcherLog)) {
         try {
             $failedAt = [DateTimeOffset]::Now.ToString('o')
-            Add-Content -LiteralPath $launcherLog -Value "$failedAt LAUNCHER_ERROR pid=$PID error=$($_.Exception.Message)"
+            if ('HelloApprovalSupervisor' -as [type]) {
+                [HelloApprovalSupervisor]::AppendLauncherLog($launcherLog, "$failedAt LAUNCHER_ERROR pid=$PID error=$($_.Exception.Message)")
+            }
         } catch {
             # Preserve the original launch failure if logging also fails.
         }
     }
-    Write-Error $_ -ErrorAction Continue
+    Write-Error -ErrorRecord $_ -ErrorAction Continue
     exit 125
 } finally {
     if ($sshencLogChanged) {
