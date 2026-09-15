@@ -39,7 +39,7 @@ function Get-GitScopedValue {
         [Parameter(Mandatory = $true)][string]$Key
     )
 
-    $value = & git config ("--{0}" -f $Scope) --get $Key 2>$null
+    $value = & git config ("--{0}" -f $Scope) --includes --get $Key 2>$null
     if ($LASTEXITCODE -eq 0) {
         return ($value -join "`n")
     }

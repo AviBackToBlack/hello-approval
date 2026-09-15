@@ -77,4 +77,4 @@ This is a guardrail, not a hard security boundary: Git's `pre-commit` hook can b
 
 Before mutation, the installer snapshots the Git global write file reported by `git var GIT_CONFIG_GLOBAL` and the owned fragment if present. If include registration or post-write verification fails, both files are restored to their previous bytes where possible.
 
-The installer intentionally uses Git itself to write `include.path` and staged config values; it does not implement a second Git-config parser/writer.
+The installer intentionally uses Git itself to write `include.path` and staged config values; it does not implement a second Git-config parser/writer. `Test-HelloApprovalPreflight.ps1` also reads global/system Git configuration with includes enabled so the project-owned fragment is visible to diagnostics instead of being reported as absent.
