@@ -14,7 +14,7 @@ and must not repoint ordinary SSH authentication.
 
 ## Decision
 
-v0.1 uses `scripts/Start-HelloApprovalAgent.ps1`, launched by Windows PowerShell with `-WindowStyle Hidden`.
+v0.1 uses `scripts/Start-HelloApprovalAgent.ps1`, launched by Windows PowerShell with `-WindowStyle Hidden`. The task invocation also uses process-local `-ExecutionPolicy RemoteSigned`; it does not change CurrentUser/LocalMachine execution policy. If an enforced MachinePolicy/UserPolicy still forbids the script, startup fails closed.
 
 The PowerShell process remains alive as the supervised process that Task Scheduler will own. It uses a small in-process P/Invoke helper to create `sshenc-agent.exe` with these Win32 semantics:
 
@@ -73,7 +73,7 @@ The launcher:
 - accepts only a simple local `\\.\pipe\...` named-pipe path;
 - explicitly refuses `\\.\pipe\openssh-ssh-agent`;
 - never sets `SSH_AUTH_SOCK` or `GIT_SSH_COMMAND`;
-- returns `125` for launcher/setup failure, reserving the agent's own exit code otherwise.
+- returns `125` for any launcher/validation/setup failure, reserving the agent's own exit code otherwise.
 
 Runtime provenance/hashes remain the HA-1.1 responsibility and are not duplicated into this launcher.
 

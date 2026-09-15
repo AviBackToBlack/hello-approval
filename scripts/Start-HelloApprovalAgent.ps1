@@ -97,29 +97,34 @@ function Quote-WindowsArgument {
     return $builder.ToString()
 }
 
-$agent = Resolve-ExistingRegularFile -Path $AgentPath -Purpose 'sshenc-agent executable'
-$config = Resolve-ExistingRegularFile -Path $ConfigPath -Purpose 'sshenc config'
-if ([IO.Path]::GetFileName($agent) -ine 'sshenc-agent.exe') {
-    throw "AgentPath must end in sshenc-agent.exe: $agent"
-}
-if ($SocketPath -notmatch '^\\\\\.\\pipe\\[A-Za-z0-9._-]+$') {
-    throw "SocketPath must be a simple local Windows named-pipe path: $SocketPath"
-}
-if ($SocketPath -ieq '\\.\pipe\openssh-ssh-agent') {
-    throw 'Refusing to launch on the stock Windows OpenSSH agent pipe.'
-}
-$logs = Assert-ProjectLogDirectory -Path $LogDirectory
-
-$stdoutLog = Join-Path $logs 'agent.stdout.log'
-$stderrLog = Join-Path $logs 'agent.stderr.log'
-$operationLog = Join-Path $logs 'sshenc-operations.jsonl'
-$launcherLog = Join-Path $logs 'launcher.log'
-
-# Child-only override. Do not persist SSHENC_LOG in user/machine state.
+$launcherLog = $null
 $previousSshencLog = [Environment]::GetEnvironmentVariable('SSHENC_LOG', 'Process')
-[Environment]::SetEnvironmentVariable('SSHENC_LOG', $operationLog, 'Process')
+$sshencLogChanged = $false
 
-$nativeSource = @'
+try {
+    $agent = Resolve-ExistingRegularFile -Path $AgentPath -Purpose 'sshenc-agent executable'
+    $config = Resolve-ExistingRegularFile -Path $ConfigPath -Purpose 'sshenc config'
+    if ([IO.Path]::GetFileName($agent) -ine 'sshenc-agent.exe') {
+        throw "AgentPath must end in sshenc-agent.exe: $agent"
+    }
+    if ($SocketPath -notmatch '^\\\\\.\\pipe\\[A-Za-z0-9._-]+$') {
+        throw "SocketPath must be a simple local Windows named-pipe path: $SocketPath"
+    }
+    if ($SocketPath -ieq '\\.\pipe\openssh-ssh-agent') {
+        throw 'Refusing to launch on the stock Windows OpenSSH agent pipe.'
+    }
+    $logs = Assert-ProjectLogDirectory -Path $LogDirectory
+
+    $stdoutLog = Join-Path $logs 'agent.stdout.log'
+    $stderrLog = Join-Path $logs 'agent.stderr.log'
+    $operationLog = Join-Path $logs 'sshenc-operations.jsonl'
+    $launcherLog = Join-Path $logs 'launcher.log'
+
+    # Child-only override. Do not persist SSHENC_LOG in user/machine state.
+    [Environment]::SetEnvironmentVariable('SSHENC_LOG', $operationLog, 'Process')
+    $sshencLogChanged = $true
+
+    $nativeSource = @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
@@ -356,7 +361,6 @@ public static class HelloApprovalSupervisor
 }
 '@
 
-try {
     if (-not ('HelloApprovalSupervisor' -as [type])) {
         Add-Type -TypeDefinition $nativeSource -Language CSharp -ErrorAction Stop
     }
@@ -377,14 +381,18 @@ try {
     Add-Content -LiteralPath $launcherLog -Value "$endedAt EXIT code=$exitCode pid=$PID"
     exit $exitCode
 } catch {
-    try {
-        $failedAt = [DateTimeOffset]::Now.ToString('o')
-        Add-Content -LiteralPath $launcherLog -Value "$failedAt LAUNCHER_ERROR pid=$PID error=$($_.Exception.Message)"
-    } catch {
-        # Preserve the original launch failure if logging also fails.
+    if (-not [string]::IsNullOrWhiteSpace($launcherLog)) {
+        try {
+            $failedAt = [DateTimeOffset]::Now.ToString('o')
+            Add-Content -LiteralPath $launcherLog -Value "$failedAt LAUNCHER_ERROR pid=$PID error=$($_.Exception.Message)"
+        } catch {
+            # Preserve the original launch failure if logging also fails.
+        }
     }
     Write-Error $_ -ErrorAction Continue
     exit 125
 } finally {
-    [Environment]::SetEnvironmentVariable('SSHENC_LOG', $previousSshencLog, 'Process')
+    if ($sshencLogChanged) {
+        [Environment]::SetEnvironmentVariable('SSHENC_LOG', $previousSshencLog, 'Process')
+    }
 }
