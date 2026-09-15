@@ -56,9 +56,23 @@ function Assert-ProjectLogDirectory {
     if (-not (Test-Path -LiteralPath $full)) {
         New-Item -ItemType Directory -Path $full -Force | Out-Null
     }
-    $item = Get-Item -LiteralPath $full -Force
-    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "LogDirectory must be a real directory, not a reparse point: $full"
+
+    # A lexical prefix is not enough: reject junction/symlink components from
+    # the project root downward so logs cannot escape through a reparse parent.
+    $cursor = $full
+    while ($true) {
+        $item = Get-Item -LiteralPath $cursor -Force
+        if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Project log path must use real directories, not reparse points: $cursor"
+        }
+        if ($cursor.TrimEnd([IO.Path]::DirectorySeparatorChar) -ieq $projectRoot.TrimEnd([IO.Path]::DirectorySeparatorChar)) {
+            break
+        }
+        $parent = [IO.Path]::GetDirectoryName($cursor)
+        if ([string]::IsNullOrWhiteSpace($parent) -or -not $parent.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and $parent -ine $projectRoot) {
+            throw "LogDirectory escaped the project-owned root during component validation: $full"
+        }
+        $cursor = $parent
     }
     return $full
 }
