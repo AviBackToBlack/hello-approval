@@ -131,7 +131,7 @@ Generic artifact/release/infrastructure/automation approval is architecture work
 
 See [Architecture](docs/ARCHITECTURE.md) and [Threat model](docs/THREAT-MODEL.md).
 
-Implementation sequencing is tracked in [ROADMAP.md](ROADMAP.md).
+Implementation sequencing is tracked in [ROADMAP.md](ROADMAP.md). The Windows v0.1 runtime contract is documented in [Runtime layout and configuration](docs/RUNTIME-LAYOUT.md).
 
 ## Security status
 

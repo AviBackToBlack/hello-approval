@@ -1,0 +1,22 @@
+# hello-approval v0.1 sshenc configuration.
+# Install at the path reported by the pinned `sshenc.exe config path`.
+#
+# This file intentionally isolates signing from the stock Windows OpenSSH
+# authentication agent. Do not replace this pipe with openssh-ssh-agent.
+
+socket_path = '\\.\pipe\sshenc-github-signing'
+
+# IMPORTANT: upstream treats an empty allowed_labels array as "allow all".
+# Keep the v0.1 signing agent restricted to the dedicated signing credential.
+allowed_labels = ["github-signing"]
+
+# The v0.1 credential is an SK/WebAuthn key, whose signing path always requires
+# user presence. "always" is also defense-in-depth if the label is ever bound
+# to a non-SK key by mistake.
+prompt_policy = "always"
+
+# `sshenc keygen --strong --label github-signing` writes
+# ~/.ssh/github-signing.pub by default.
+pub_dir = "~/.ssh"
+
+log_level = "info"
