@@ -173,12 +173,12 @@ $preserveCommitSigning = $false
 $preserveTagSigning = $false
 if ($existingOwned) {
     $ownedConfig = Assert-RegularFile -Path $ownedConfig -Purpose 'hello-approval owned Git config'
-    $schemaValues = Get-GitValues -Git $git -Scope file -File $ownedConfig -Key 'hello-approval.schema'
+    $schemaValues = @(Get-GitValues -Git $git -Scope file -File $ownedConfig -Key 'hello-approval.schema')
     if ($schemaValues.Count -ne 1 -or $schemaValues[0] -ne $Schema) {
         throw "Refusing to replace unowned Git config fragment: $ownedConfig"
     }
-    $commitValues = Get-GitValues -Git $git -Scope file -File $ownedConfig -Key 'commit.gpgsign'
-    $tagValues = Get-GitValues -Git $git -Scope file -File $ownedConfig -Key 'tag.gpgsign'
+    $commitValues = @(Get-GitValues -Git $git -Scope file -File $ownedConfig -Key 'commit.gpgsign')
+    $tagValues = @(Get-GitValues -Git $git -Scope file -File $ownedConfig -Key 'tag.gpgsign')
     if ($commitValues.Count -gt 1 -or ($commitValues.Count -eq 1 -and $commitValues[0] -ne 'true')) { throw 'Owned fragment has unexpected commit.gpgSign state.' }
     if ($tagValues.Count -gt 1 -or ($tagValues.Count -eq 1 -and $tagValues[0] -ne 'true')) { throw 'Owned fragment has unexpected tag.gpgSign state.' }
     $preserveCommitSigning = $commitValues.Count -eq 1
@@ -193,14 +193,14 @@ $desired = @{
     'user.signingkey' = ($publicKeyPath -replace '\\', '/')
 }
 foreach ($key in $OwnedKeys) {
-    $values = Get-GitValues -Git $git -Scope global -Key $key
+    $values = @(Get-GitValues -Git $git -Scope global -Key $key)
     $conflicts = @($values | Where-Object { $_ -ne $desired[$key] })
     if ($conflicts.Count -gt 0 -and -not $OverrideExistingSigningConfig) {
         throw "Existing global Git setting '$key' conflicts with hello-approval. Re-run with -OverrideExistingSigningConfig to preserve it but give the hello-approval include later precedence. Existing values: $($values -join '; ')"
     }
 }
 
-$directIncludes = Get-DirectGlobalValues -Git $git -Key 'include.path'
+$directIncludes = @(Get-DirectGlobalValues -Git $git -Key 'include.path')
 $ourIncludeCount = @($directIncludes | Where-Object { ($_ -replace '\\','/') -eq $ownedConfigGit }).Count
 if ($ourIncludeCount -gt 1) { throw "Global Git config contains duplicate hello-approval include.path entries: $ownedConfigGit" }
 
@@ -223,7 +223,7 @@ try {
 
     foreach ($key in @('hello-approval.schema') + $OwnedKeys) {
         $expected = if ($key -eq 'hello-approval.schema') { $Schema } else { $desired[$key] }
-        $values = Get-GitValues -Git $git -Scope file -File $stage -Key $key
+        $values = @(Get-GitValues -Git $git -Scope file -File $stage -Key $key)
         if ($values.Count -ne 1 -or $values[0] -ne $expected) { throw "Staged Git config failed verification for $key." }
     }
 
@@ -240,7 +240,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Failed to register hello-approval include.path in global Git config.' }
     }
 
-    $postIncludes = Get-DirectGlobalValues -Git $git -Key 'include.path'
+    $postIncludes = @(Get-DirectGlobalValues -Git $git -Key 'include.path')
     if (@($postIncludes | Where-Object { ($_ -replace '\\','/') -eq $ownedConfigGit }).Count -ne 1) {
         throw 'Global Git config does not contain exactly one hello-approval include.path after installation.'
     }
