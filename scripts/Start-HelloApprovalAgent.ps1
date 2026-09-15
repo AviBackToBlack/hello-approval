@@ -12,19 +12,12 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$SocketPath = '\\.\pipe\sshenc-github-signing',
 
-    [ValidateNotNullOrEmpty()]
-    [string]$LogDirectory = (Join-Path $env:LOCALAPPDATA 'hello-approval\logs')
+    [AllowEmptyString()]
+    [string]$LogDirectory = ''
 )
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-
-if ($env:OS -ne 'Windows_NT') {
-    throw 'Start-HelloApprovalAgent.ps1 supports Windows only.'
-}
-if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-    throw 'LOCALAPPDATA is not available.'
-}
 
 function Resolve-ExistingRegularFile {
     param(
@@ -126,6 +119,16 @@ $previousSshencLog = [Environment]::GetEnvironmentVariable('SSHENC_LOG', 'Proces
 $sshencLogChanged = $false
 
 try {
+    if ($env:OS -ne 'Windows_NT') {
+        throw 'Start-HelloApprovalAgent.ps1 supports Windows only.'
+    }
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        throw 'LOCALAPPDATA is not available.'
+    }
+    if ([string]::IsNullOrWhiteSpace($LogDirectory)) {
+        $LogDirectory = Join-Path $env:LOCALAPPDATA 'hello-approval\logs'
+    }
+
     $agent = Resolve-ExistingRegularFile -Path $AgentPath -Purpose 'sshenc-agent executable'
     $config = Resolve-ExistingRegularFile -Path $ConfigPath -Purpose 'sshenc config'
     if ([IO.Path]::GetFileName($agent) -ine 'sshenc-agent.exe') {

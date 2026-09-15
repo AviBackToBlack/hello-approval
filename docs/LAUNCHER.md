@@ -50,6 +50,18 @@ Rejected for v0.1. `--headless` exists in the open-source console host, but Micr
 
 A tiny native/managed GUI launcher could implement the same Job Object pattern. It is not selected because introducing a project-owned executable creates another binary build/provenance/distribution surface without adding necessary v0.1 behavior. The supported Win32 primitives are reachable from the already-required Windows PowerShell runtime.
 
+## Win32 evidence
+
+The launcher decision depends on supported Windows process APIs rather than undocumented console-host behavior:
+
+- Microsoft documents `CREATE_NO_WINDOW` and `CREATE_SUSPENDED` in [Process Creation Flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags).
+- Microsoft recommends `STARTUPINFOEX` plus `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` when a child must inherit only an explicit handle allowlist; see [Create processes](https://learn.microsoft.com/en-us/windows/win32/procthread/creating-processes).
+- `UpdateProcThreadAttribute` documents `PROC_THREAD_ATTRIBUTE_JOB_LIST` as assigning the listed Job Objects to the child at creation time, supported on Windows 10+ / Windows Server 2016+: [UpdateProcThreadAttribute](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute).
+- Job-object termination semantics, including `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, are documented by Microsoft under [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects) and the job limit structures.
+- The Microsoft Terminal maintainers explicitly call direct `conhost` command-line hosting an unsupported API surface in [discussion #19003](https://github.com/microsoft/terminal/discussions/19003). Separately, [issue #17178](https://github.com/microsoft/terminal/issues/17178) demonstrates that `conhost.exe --headless` does not propagate the hosted child's exit code.
+
+These links are design evidence, not a claim that undocumented implementation details will remain stable. The selected path intentionally uses the documented Win32 APIs instead.
+
 ## Logging
 
 The launcher keeps three classes of logs under `%LOCALAPPDATA%\hello-approval\logs` by default:
