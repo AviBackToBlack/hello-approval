@@ -48,12 +48,18 @@ if ($description -ne $TaskMarker) {
     throw "Refusing to remove foreign task '$TaskPath$TaskName'; ownership marker is '$description'."
 }
 
+$removed = $false
 if ($PSCmdlet.ShouldProcess("$TaskPath$TaskName", 'Stop and unregister owned hello-approval Scheduled Task')) {
     if ($task.State -eq 'Running') {
         Stop-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
         Wait-TaskNotRunning
     }
     Unregister-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Confirm:$false
+    $removed = $true
 }
 
-Write-Host 'Only the owned Scheduled Task was removed. Runtime, config, credentials, Git/SSH settings, and content-addressed launcher cache were left unchanged.'
+if ($removed) {
+    Write-Host 'Only the owned Scheduled Task was removed. Runtime, config, credentials, Git/SSH settings, and content-addressed launcher cache were left unchanged.'
+} else {
+    Write-Host 'Scheduled Task was left unchanged.'
+}
