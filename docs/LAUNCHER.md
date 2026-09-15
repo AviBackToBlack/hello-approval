@@ -19,13 +19,14 @@ v0.1 uses `scripts/Start-HelloApprovalAgent.ps1`, launched by Windows PowerShell
 The PowerShell process remains alive as the supervised process that Task Scheduler will own. It uses a small in-process P/Invoke helper to create `sshenc-agent.exe` with these Win32 semantics:
 
 1. create an unnamed Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`;
-2. open project-owned stdout/stderr logs as inheritable handles;
-3. create `sshenc-agent.exe` with `CREATE_SUSPENDED | CREATE_NO_WINDOW`;
-4. assign the suspended child to the Job Object;
-5. resume it only after assignment succeeds;
-6. wait for the child process;
-7. propagate the child's exit code;
-8. close the Job Object on every launcher exit.
+2. open project-owned stdout/stderr logs with append-only file access plus an inherited `NUL` stdin handle;
+3. restrict child handle inheritance with `STARTUPINFOEX` / `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` to only stdin/stdout/stderr;
+4. create `sshenc-agent.exe` with `CREATE_SUSPENDED | CREATE_NO_WINDOW`;
+5. assign the suspended child to the Job Object;
+6. resume it only after assignment succeeds;
+7. wait for the child process;
+8. propagate the child's exit code;
+9. close the Job Object on every launcher exit.
 
 This ordering intentionally removes the launch-to-job race. If Task Scheduler or another supervisor terminates the PowerShell wrapper, Windows closes its Job Object handle and terminates the associated agent process.
 

@@ -142,21 +142,25 @@ try {
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Text;
 
 public static class HelloApprovalSupervisor
 {
     private const uint CREATE_SUSPENDED = 0x00000004;
     private const uint CREATE_NO_WINDOW = 0x08000000;
+    private const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
     private const uint STARTF_USESTDHANDLES = 0x00000100;
     private const uint INFINITE = 0xFFFFFFFF;
     private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
     private const int JobObjectExtendedLimitInformation = 9;
-    private const uint GENERIC_WRITE = 0x40000000;
+    private const uint GENERIC_READ = 0x80000000;
+    private const uint FILE_APPEND_DATA = 0x00000004;
     private const uint FILE_SHARE_READ = 0x00000001;
     private const uint FILE_SHARE_WRITE = 0x00000002;
+    private const uint OPEN_EXISTING = 3;
     private const uint OPEN_ALWAYS = 4;
     private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
-    private const uint FILE_END = 2;
+    private static readonly IntPtr PROC_THREAD_ATTRIBUTE_HANDLE_LIST = new IntPtr(0x00020002);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct SECURITY_ATTRIBUTES
@@ -187,6 +191,13 @@ public static class HelloApprovalSupervisor
         public IntPtr hStdInput;
         public IntPtr hStdOutput;
         public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFOEX
+    {
+        public STARTUPINFO StartupInfo;
+        public IntPtr lpAttributeList;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -237,15 +248,35 @@ public static class HelloApprovalSupervisor
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CreateProcessW(
         string lpApplicationName,
-        string lpCommandLine,
+        StringBuilder lpCommandLine,
         IntPtr lpProcessAttributes,
         IntPtr lpThreadAttributes,
         bool bInheritHandles,
         uint dwCreationFlags,
         IntPtr lpEnvironment,
         string lpCurrentDirectory,
-        ref STARTUPINFO lpStartupInfo,
+        ref STARTUPINFOEX lpStartupInfo,
         out PROCESS_INFORMATION lpProcessInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool InitializeProcThreadAttributeList(
+        IntPtr lpAttributeList,
+        int dwAttributeCount,
+        int dwFlags,
+        ref IntPtr lpSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool UpdateProcThreadAttribute(
+        IntPtr lpAttributeList,
+        uint dwFlags,
+        IntPtr attribute,
+        IntPtr lpValue,
+        IntPtr cbSize,
+        IntPtr lpPreviousValue,
+        IntPtr lpReturnSize);
+
+    [DllImport("kernel32.dll")]
+    private static extern void DeleteProcThreadAttributeList(IntPtr lpAttributeList);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr CreateJobObjectW(IntPtr lpJobAttributes, string lpName);
@@ -274,9 +305,6 @@ public static class HelloApprovalSupervisor
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr CreateFileW(string fileName, uint desiredAccess, uint shareMode, ref SECURITY_ATTRIBUTES securityAttributes, uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool SetFilePointerEx(IntPtr hFile, long distance, out long newFilePointer, uint moveMethod);
-
     private static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);
 
     private static void ThrowLastError(string operation)
@@ -284,30 +312,41 @@ public static class HelloApprovalSupervisor
         throw new Win32Exception(Marshal.GetLastWin32Error(), operation);
     }
 
-    private static IntPtr OpenAppendLog(string path)
+    private static SECURITY_ATTRIBUTES InheritableSecurityAttributes()
     {
-        var sa = new SECURITY_ATTRIBUTES
+        return new SECURITY_ATTRIBUTES
         {
             nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)),
             lpSecurityDescriptor = IntPtr.Zero,
             bInheritHandle = true
         };
-        IntPtr handle = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, ref sa, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+    }
+
+    private static IntPtr OpenAppendLog(string path)
+    {
+        var sa = InheritableSecurityAttributes();
+        IntPtr handle = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, ref sa, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
         if (handle == INVALID_HANDLE_VALUE) ThrowLastError("CreateFileW(" + path + ")");
-        long ignored;
-        if (!SetFilePointerEx(handle, 0, out ignored, FILE_END))
-        {
-            CloseHandle(handle);
-            ThrowLastError("SetFilePointerEx(" + path + ")");
-        }
+        return handle;
+    }
+
+    private static IntPtr OpenNullInput()
+    {
+        var sa = InheritableSecurityAttributes();
+        IntPtr handle = CreateFileW("NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, ref sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+        if (handle == INVALID_HANDLE_VALUE) ThrowLastError("CreateFileW(NUL)");
         return handle;
     }
 
     public static int Run(string executable, string commandLine, string stdoutPath, string stderrPath)
     {
         IntPtr job = IntPtr.Zero;
+        IntPtr stdin = INVALID_HANDLE_VALUE;
         IntPtr stdout = INVALID_HANDLE_VALUE;
         IntPtr stderr = INVALID_HANDLE_VALUE;
+        IntPtr attributeList = IntPtr.Zero;
+        IntPtr handleList = IntPtr.Zero;
+        bool attributeListInitialized = false;
         PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
         bool created = false;
         bool assigned = false;
@@ -332,18 +371,46 @@ public static class HelloApprovalSupervisor
                 Marshal.FreeHGlobal(limitsPtr);
             }
 
+            stdin = OpenNullInput();
             stdout = OpenAppendLog(stdoutPath);
             stderr = OpenAppendLog(stderrPath);
 
-            var si = new STARTUPINFO();
-            si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
-            si.dwFlags = STARTF_USESTDHANDLES;
-            si.hStdInput = IntPtr.Zero;
-            si.hStdOutput = stdout;
-            si.hStdError = stderr;
+            IntPtr attributeBytes = IntPtr.Zero;
+            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref attributeBytes);
+            if (attributeBytes == IntPtr.Zero)
+                ThrowLastError("InitializeProcThreadAttributeList(size)");
+            attributeList = Marshal.AllocHGlobal(attributeBytes);
+            if (!InitializeProcThreadAttributeList(attributeList, 1, 0, ref attributeBytes))
+                ThrowLastError("InitializeProcThreadAttributeList");
+            attributeListInitialized = true;
 
-            if (!CreateProcessW(executable, commandLine, IntPtr.Zero, IntPtr.Zero, true,
-                    CREATE_SUSPENDED | CREATE_NO_WINDOW, IntPtr.Zero, null, ref si, out pi))
+            int handleBytes = IntPtr.Size * 3;
+            handleList = Marshal.AllocHGlobal(handleBytes);
+            Marshal.WriteIntPtr(handleList, 0 * IntPtr.Size, stdin);
+            Marshal.WriteIntPtr(handleList, 1 * IntPtr.Size, stdout);
+            Marshal.WriteIntPtr(handleList, 2 * IntPtr.Size, stderr);
+            if (!UpdateProcThreadAttribute(
+                    attributeList,
+                    0,
+                    PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                    handleList,
+                    new IntPtr(handleBytes),
+                    IntPtr.Zero,
+                    IntPtr.Zero))
+                ThrowLastError("UpdateProcThreadAttribute(HANDLE_LIST)");
+
+            var si = new STARTUPINFOEX();
+            si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
+            si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+            si.StartupInfo.hStdInput = stdin;
+            si.StartupInfo.hStdOutput = stdout;
+            si.StartupInfo.hStdError = stderr;
+            si.lpAttributeList = attributeList;
+
+            var writableCommandLine = new StringBuilder(commandLine);
+            if (!CreateProcessW(executable, writableCommandLine, IntPtr.Zero, IntPtr.Zero, true,
+                    CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
+                    IntPtr.Zero, null, ref si, out pi))
                 ThrowLastError("CreateProcessW");
             created = true;
 
@@ -368,11 +435,16 @@ public static class HelloApprovalSupervisor
                 TerminateProcess(pi.hProcess, 125);
             if (pi.hThread != IntPtr.Zero) CloseHandle(pi.hThread);
             if (pi.hProcess != IntPtr.Zero) CloseHandle(pi.hProcess);
+            if (attributeListInitialized && attributeList != IntPtr.Zero) DeleteProcThreadAttributeList(attributeList);
+            if (handleList != IntPtr.Zero) Marshal.FreeHGlobal(handleList);
+            if (attributeList != IntPtr.Zero) Marshal.FreeHGlobal(attributeList);
+            if (stdin != INVALID_HANDLE_VALUE) CloseHandle(stdin);
             if (stdout != INVALID_HANDLE_VALUE) CloseHandle(stdout);
             if (stderr != INVALID_HANDLE_VALUE) CloseHandle(stderr);
             if (job != IntPtr.Zero) CloseHandle(job);
         }
     }
+}
 }
 '@
 
