@@ -77,6 +77,35 @@ function Assert-PinnedRuntimeSurface {
     }
 }
 
+function Invoke-GitCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$Git,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Context,
+        [switch]$AllowExitOne
+    )
+
+    $savedErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 can promote native stderr to NativeCommandError
+        # while EAP=Stop, before callers get a chance to inspect LASTEXITCODE.
+        # Classify native Git by its process exit code instead.
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $Git @Arguments 2>$null | ForEach-Object { [string]$_ })
+        $rc = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedErrorActionPreference
+    }
+
+    if ($rc -eq 0 -or ($AllowExitOne -and $rc -eq 1)) {
+        return [pscustomobject]@{
+            ExitCode = $rc
+            Output   = $output
+        }
+    }
+    throw "$Context failed with exit $rc."
+}
+
 function Get-GitValues {
     param(
         [Parameter(Mandatory = $true)][string]$Git,
@@ -84,34 +113,31 @@ function Get-GitValues {
         [Parameter(Mandatory = $true)][string]$Key,
         [string]$File
     )
-    if ($Scope -eq 'file') { $output = @(& $Git config --file $File --get-all $Key 2>$null) }
-    elseif ($Scope -eq 'global') { $output = @(& $Git config --global --includes --get-all $Key 2>$null) }
-    else { $output = @(& $Git config --system --get-all $Key 2>$null) }
-    $rc = $LASTEXITCODE
-    if ($rc -eq 1) { return @() }
-    if ($rc -ne 0) { throw "git config --$Scope --get-all $Key failed with exit $rc." }
-    return @($output | ForEach-Object { [string]$_ })
+    $arguments = if ($Scope -eq 'file') { @('config', '--file', $File, '--get-all', $Key) }
+        elseif ($Scope -eq 'global') { @('config', '--global', '--includes', '--get-all', $Key) }
+        else { @('config', '--system', '--get-all', $Key) }
+    $result = Invoke-GitCommand -Git $Git -Arguments $arguments -Context "git config --$Scope --get-all $Key" -AllowExitOne
+    if ($result.ExitCode -eq 1) { return @() }
+    return @($result.Output)
 }
 
 function Get-DirectGlobalValues {
     param([Parameter(Mandatory = $true)][string]$Git, [Parameter(Mandatory = $true)][string]$Key)
-    $output = @(& $Git config --global --get-all $Key 2>$null)
-    $rc = $LASTEXITCODE
-    if ($rc -eq 1) { return @() }
-    if ($rc -ne 0) { throw "git config --global --get-all $Key failed with exit $rc." }
-    return @($output | ForEach-Object { [string]$_ })
+    $result = Invoke-GitCommand -Git $Git -Arguments @('config', '--global', '--get-all', $Key) -Context "git config --global --get-all $Key" -AllowExitOne
+    if ($result.ExitCode -eq 1) { return @() }
+    return @($result.Output)
 }
 
 function Set-ConfigValue {
     param([string]$Git, [string]$File, [string]$Key, [string]$Value)
-    & $Git config --file $File --replace-all $Key $Value
-    if ($LASTEXITCODE -ne 0) { throw "Failed to write $Key to staged hello-approval Git config." }
+    [void](Invoke-GitCommand -Git $Git -Arguments @('config', '--file', $File, '--replace-all', $Key, $Value) -Context "git config --file <staged> --replace-all $Key")
 }
 
 function Get-GlobalWritePath {
     param([string]$Git)
-    $paths = @(& $Git var GIT_CONFIG_GLOBAL 2>$null | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
-    if ($LASTEXITCODE -ne 0 -or $paths.Count -lt 1) { throw 'Git did not report a global configuration path.' }
+    $result = Invoke-GitCommand -Git $Git -Arguments @('var', 'GIT_CONFIG_GLOBAL') -Context 'git var GIT_CONFIG_GLOBAL'
+    $paths = @($result.Output | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
+    if ($paths.Count -lt 1) { throw 'Git did not report a global configuration path.' }
     $path = $paths[$paths.Count - 1] -replace '/', '\'
     if (-not [IO.Path]::IsPathRooted($path)) { throw "Git global write path is not absolute: $path" }
     return [IO.Path]::GetFullPath($path)
@@ -136,8 +162,7 @@ $gitCommand = Get-Command git.exe -CommandType Application -ErrorAction Silently
 if ($null -eq $gitCommand) { $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue }
 if ($null -eq $gitCommand) { throw 'Git was not found in PATH.' }
 $git = $gitCommand.Source
-& $git --version | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'Git executable failed its version probe.' }
+[void](Invoke-GitCommand -Git $git -Arguments @('--version') -Context 'Git executable version probe')
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $pin = Get-Content -LiteralPath (Join-Path $repoRoot 'provenance\sshenc-v0.6.101.json') -Raw | ConvertFrom-Json
@@ -178,8 +203,8 @@ if ($existingOwned) {
         throw "Refusing to replace unowned Git config fragment: $ownedConfig"
     }
     $knownOwnedKeys = @('hello-approval.schema') + $OwnedKeys + @('commit.gpgsign', 'tag.gpgsign')
-    $allOwnedKeys = @(& $git config --file $ownedConfig --name-only --list 2>$null | ForEach-Object { [string]$_ })
-    if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate existing hello-approval Git config fragment.' }
+    $enumeration = Invoke-GitCommand -Git $git -Arguments @('config', '--file', $ownedConfig, '--name-only', '--list') -Context 'Enumerate existing hello-approval Git config fragment'
+    $allOwnedKeys = @($enumeration.Output)
     $unknownOwnedKeys = @($allOwnedKeys | Where-Object { $knownOwnedKeys -notcontains $_ } | Select-Object -Unique)
     if ($unknownOwnedKeys.Count -gt 0) {
         Write-Warning "Owned hello-approval Git config contains extra keys that will be dropped on rewrite: $($unknownOwnedKeys -join ', ')"
@@ -243,8 +268,7 @@ try {
     }
 
     if ($ourIncludeCount -eq 0) {
-        & $git config --global --add include.path $ownedConfigGit
-        if ($LASTEXITCODE -ne 0) { throw 'Failed to register hello-approval include.path in global Git config.' }
+        [void](Invoke-GitCommand -Git $git -Arguments @('config', '--global', '--add', 'include.path', $ownedConfigGit) -Context 'Register hello-approval include.path in global Git config')
     }
 
     $postIncludes = @(Get-DirectGlobalValues -Git $git -Key 'include.path')
@@ -259,20 +283,21 @@ try {
     try {
         $env:GIT_CEILING_DIRECTORIES = $verifyRoot
         foreach ($key in $OwnedKeys) {
-            $winner = @(& $git -C $verifyRoot config --global --includes --get $key 2>$null)
-            if ($LASTEXITCODE -ne 0 -or $winner.Count -ne 1 -or [string]$winner[0] -ne $desired[$key]) {
+            $probe = Invoke-GitCommand -Git $git -Arguments @('-C', $verifyRoot, 'config', '--global', '--includes', '--get', $key) -Context "Verify context-neutral global Git value for '$key'" -AllowExitOne
+            $winner = @($probe.Output)
+            if ($probe.ExitCode -ne 0 -or $winner.Count -ne 1 -or [string]$winner[0] -ne $desired[$key]) {
                 throw "Context-neutral global Git value for '$key' is not the hello-approval value after installation. An unconditional later global include may be overriding it."
             }
         }
 
-        $effectiveCommit = @(& $git -C $verifyRoot config --global --includes --get commit.gpgsign 2>$null)
-        $commitRc = $LASTEXITCODE
-        $effectiveTag = @(& $git -C $verifyRoot config --global --includes --get tag.gpgsign 2>$null)
-        $tagRc = $LASTEXITCODE
-        if (($EnableCommitSigning -or $preserveCommitSigning) -and ($commitRc -ne 0 -or $effectiveCommit.Count -ne 1 -or $effectiveCommit[0] -ne 'true')) {
+        $commitProbe = Invoke-GitCommand -Git $git -Arguments @('-C', $verifyRoot, 'config', '--global', '--includes', '--get', 'commit.gpgsign') -Context 'Read context-neutral global commit.gpgsign' -AllowExitOne
+        $tagProbe = Invoke-GitCommand -Git $git -Arguments @('-C', $verifyRoot, 'config', '--global', '--includes', '--get', 'tag.gpgsign') -Context 'Read context-neutral global tag.gpgsign' -AllowExitOne
+        $effectiveCommit = @($commitProbe.Output)
+        $effectiveTag = @($tagProbe.Output)
+        if (($EnableCommitSigning -or $preserveCommitSigning) -and ($commitProbe.ExitCode -ne 0 -or $effectiveCommit.Count -ne 1 -or $effectiveCommit[0] -ne 'true')) {
             throw 'Explicit/preserved commit signing enablement did not become effective in the context-neutral global baseline.'
         }
-        if (($EnableTagSigning -or $preserveTagSigning) -and ($tagRc -ne 0 -or $effectiveTag.Count -ne 1 -or $effectiveTag[0] -ne 'true')) {
+        if (($EnableTagSigning -or $preserveTagSigning) -and ($tagProbe.ExitCode -ne 0 -or $effectiveTag.Count -ne 1 -or $effectiveTag[0] -ne 'true')) {
             throw 'Explicit/preserved tag signing enablement did not become effective in the context-neutral global baseline.'
         }
     } finally {
