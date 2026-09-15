@@ -445,7 +445,6 @@ public static class HelloApprovalSupervisor
         }
     }
 }
-}
 '@
 
     if (-not ('HelloApprovalSupervisor' -as [type])) {
