@@ -21,14 +21,14 @@ The PowerShell process remains alive as the supervised process that Task Schedul
 1. create an unnamed Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`;
 2. open project-owned stdout/stderr logs with append-only file access plus an inherited `NUL` stdin handle;
 3. restrict child handle inheritance with `STARTUPINFOEX` / `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` to only stdin/stdout/stderr;
-4. create `sshenc-agent.exe` with `CREATE_SUSPENDED | CREATE_NO_WINDOW`;
-5. assign the suspended child to the Job Object;
-6. resume it only after assignment succeeds;
+4. add the Job Object to the same creation attribute list with `PROC_THREAD_ATTRIBUTE_JOB_LIST`;
+5. create `sshenc-agent.exe` with `CREATE_SUSPENDED | CREATE_NO_WINDOW`, so Windows assigns it to the Job Object as part of process creation;
+6. resume the primary thread only after `CreateProcessW` returns successfully;
 7. wait for the child process;
 8. propagate the child's exit code;
 9. close the Job Object on every launcher exit.
 
-This ordering intentionally removes the launch-to-job race. If Task Scheduler or another supervisor terminates the PowerShell wrapper, Windows closes its Job Object handle and terminates the associated agent process.
+`PROC_THREAD_ATTRIBUTE_JOB_LIST` is supported on Windows 10 and newer and removes the orphan window that would exist with a separate post-create `AssignProcessToJobObject` call. If Task Scheduler or another supervisor terminates the PowerShell wrapper after `CreateProcessW` returns, Windows closes its Job Object handle and terminates the associated agent process.
 
 `CREATE_NO_WINDOW` suppresses the console for the console-subsystem child; it does not move the process to a service session. The wrapper and child remain in the same interactive user session, which is required for a Windows Hello/WebAuthn prompt.
 
@@ -60,7 +60,7 @@ The launcher keeps three classes of logs under `%LOCALAPPDATA%\hello-approval\lo
 
 `SSHENC_LOG` is set only in the launcher process immediately before child creation, inherited by the child, and restored before a normal wrapper exit. No user- or machine-scope environment variable is written.
 
-The launcher refuses a log directory outside `%LOCALAPPDATA%\hello-approval` and rejects reparse-point log directories.
+The launcher refuses a log directory outside `%LOCALAPPDATA%\hello-approval`. It validates/creates the project root first, then walks each requested child directory one component at a time, refusing reparse points before traversing or creating through them.
 
 ## Guardrails
 

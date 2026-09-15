@@ -48,31 +48,41 @@ function Assert-ProjectLogDirectory {
 
     $projectRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'hello-approval'))
     $full = [IO.Path]::GetFullPath($Path)
-    $prefix = $projectRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $rootTrimmed = $projectRoot.TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $prefix = $rootTrimmed + [IO.Path]::DirectorySeparatorChar
     if (-not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
         throw "LogDirectory must stay under the project-owned root '$projectRoot': $full"
     }
 
-    if (-not (Test-Path -LiteralPath $full)) {
-        New-Item -ItemType Directory -Path $full -Force | Out-Null
+    # Establish/verify the project root before traversing any requested child.
+    # Never create through an existing junction/symlink and reject a project
+    # root that is itself redirected.
+    if (-not (Test-Path -LiteralPath $projectRoot)) {
+        New-Item -ItemType Directory -Path $projectRoot | Out-Null
+    }
+    $rootItem = Get-Item -LiteralPath $projectRoot -Force
+    if (-not $rootItem.PSIsContainer -or ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Project-owned log root must be a real directory, not a reparse point: $projectRoot"
     }
 
-    # A lexical prefix is not enough: reject junction/symlink components from
-    # the project root downward so logs cannot escape through a reparse parent.
-    $cursor = $full
-    while ($true) {
-        $item = Get-Item -LiteralPath $cursor -Force
-        if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw "Project log path must use real directories, not reparse points: $cursor"
+    $relative = $full.Substring($prefix.Length)
+    $parts = @($relative -split '[\\/]' | Where-Object { $_ -ne '' })
+    $cursor = $projectRoot
+    foreach ($part in $parts) {
+        $next = Join-Path $cursor $part
+        if (Test-Path -LiteralPath $next) {
+            $item = Get-Item -LiteralPath $next -Force
+            if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw "Project log path must use real directories, not reparse points: $next"
+            }
+        } else {
+            New-Item -ItemType Directory -Path $next | Out-Null
+            $item = Get-Item -LiteralPath $next -Force
+            if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw "Newly created project log path is not a real directory: $next"
+            }
         }
-        if ($cursor.TrimEnd([IO.Path]::DirectorySeparatorChar) -ieq $projectRoot.TrimEnd([IO.Path]::DirectorySeparatorChar)) {
-            break
-        }
-        $parent = [IO.Path]::GetDirectoryName($cursor)
-        if ([string]::IsNullOrWhiteSpace($parent) -or -not $parent.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and $parent -ine $projectRoot) {
-            throw "LogDirectory escaped the project-owned root during component validation: $full"
-        }
-        $cursor = $parent
+        $cursor = $next
     }
     return $full
 }
@@ -161,6 +171,7 @@ public static class HelloApprovalSupervisor
     private const uint OPEN_ALWAYS = 4;
     private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
     private static readonly IntPtr PROC_THREAD_ATTRIBUTE_HANDLE_LIST = new IntPtr(0x00020002);
+    private static readonly IntPtr PROC_THREAD_ATTRIBUTE_JOB_LIST = new IntPtr(0x0002000D);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct SECURITY_ATTRIBUTES
@@ -284,8 +295,6 @@ public static class HelloApprovalSupervisor
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool SetInformationJobObject(IntPtr hJob, int infoClass, IntPtr lpJobObjectInfo, uint cbJobObjectInfoLength);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern uint ResumeThread(IntPtr hThread);
@@ -296,8 +305,6 @@ public static class HelloApprovalSupervisor
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
@@ -346,10 +353,9 @@ public static class HelloApprovalSupervisor
         IntPtr stderr = INVALID_HANDLE_VALUE;
         IntPtr attributeList = IntPtr.Zero;
         IntPtr handleList = IntPtr.Zero;
+        IntPtr jobList = IntPtr.Zero;
         bool attributeListInitialized = false;
         PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
-        bool created = false;
-        bool assigned = false;
 
         try
         {
@@ -376,11 +382,11 @@ public static class HelloApprovalSupervisor
             stderr = OpenAppendLog(stderrPath);
 
             IntPtr attributeBytes = IntPtr.Zero;
-            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref attributeBytes);
+            InitializeProcThreadAttributeList(IntPtr.Zero, 2, 0, ref attributeBytes);
             if (attributeBytes == IntPtr.Zero)
                 ThrowLastError("InitializeProcThreadAttributeList(size)");
             attributeList = Marshal.AllocHGlobal(attributeBytes);
-            if (!InitializeProcThreadAttributeList(attributeList, 1, 0, ref attributeBytes))
+            if (!InitializeProcThreadAttributeList(attributeList, 2, 0, ref attributeBytes))
                 ThrowLastError("InitializeProcThreadAttributeList");
             attributeListInitialized = true;
 
@@ -399,6 +405,18 @@ public static class HelloApprovalSupervisor
                     IntPtr.Zero))
                 ThrowLastError("UpdateProcThreadAttribute(HANDLE_LIST)");
 
+            jobList = Marshal.AllocHGlobal(IntPtr.Size);
+            Marshal.WriteIntPtr(jobList, job);
+            if (!UpdateProcThreadAttribute(
+                    attributeList,
+                    0,
+                    PROC_THREAD_ATTRIBUTE_JOB_LIST,
+                    jobList,
+                    new IntPtr(IntPtr.Size),
+                    IntPtr.Zero,
+                    IntPtr.Zero))
+                ThrowLastError("UpdateProcThreadAttribute(JOB_LIST)");
+
             var si = new STARTUPINFOEX();
             si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
             si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -412,12 +430,9 @@ public static class HelloApprovalSupervisor
                     CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
                     IntPtr.Zero, null, ref si, out pi))
                 ThrowLastError("CreateProcessW");
-            created = true;
 
-            if (!AssignProcessToJobObject(job, pi.hProcess))
-                ThrowLastError("AssignProcessToJobObject");
-            assigned = true;
-
+            // PROC_THREAD_ATTRIBUTE_JOB_LIST makes membership atomic with
+            // process creation. The primary thread is still suspended here.
             if (ResumeThread(pi.hThread) == 0xFFFFFFFF)
                 ThrowLastError("ResumeThread");
 
@@ -431,12 +446,11 @@ public static class HelloApprovalSupervisor
         }
         finally
         {
-            if (created && !assigned && pi.hProcess != IntPtr.Zero)
-                TerminateProcess(pi.hProcess, 125);
             if (pi.hThread != IntPtr.Zero) CloseHandle(pi.hThread);
             if (pi.hProcess != IntPtr.Zero) CloseHandle(pi.hProcess);
             if (attributeListInitialized && attributeList != IntPtr.Zero) DeleteProcThreadAttributeList(attributeList);
             if (handleList != IntPtr.Zero) Marshal.FreeHGlobal(handleList);
+            if (jobList != IntPtr.Zero) Marshal.FreeHGlobal(jobList);
             if (attributeList != IntPtr.Zero) Marshal.FreeHGlobal(attributeList);
             if (stdin != INVALID_HANDLE_VALUE) CloseHandle(stdin);
             if (stdout != INVALID_HANDLE_VALUE) CloseHandle(stdout);
