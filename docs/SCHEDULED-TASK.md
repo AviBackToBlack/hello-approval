@@ -61,7 +61,7 @@ Task updates switch the action to the new launcher hash-path. Old launcher hash 
 
 The installer reads the repository's pinned upstream provenance record and requires the already-installed runtime to match the **exact HA-1.1 surface**: the version root contains only `bin`, `bin` contains exactly `installation_policy.installed_files`, entries are real non-reparse files, and every required file matches its pinned size and SHA-256. This is checked before Task Scheduler state is created or updated.
 
-The sshenc config path is resolved by executing the verified pinned `sshenc.exe config path`. The resolved config must already exist as a real non-reparse file. The installer then uses the pinned binary's `sshenc.exe config show` output to validate the effective policy: `socket_path` must be the dedicated signing pipe, `allowed_labels` must contain exactly `github-signing`, and `prompt_policy` must be `always`. HA-1.3 does not create or replace the signing config.
+The sshenc config path is resolved by executing the verified pinned `sshenc.exe config path`. The resolved config must already exist as a real non-reparse file. The installer then uses the pinned binary's `sshenc.exe config show` output to validate the effective policy: `socket_path` must be the dedicated signing pipe, `allowed_labels` must contain exactly `github-signing`, and `prompt_policy` must be `always`. HA-1.3 does not create or replace the signing config. The parser intentionally targets the pinned v0.6.101 canonical `config show` format and fails closed; every upstream pin bump must revalidate that output contract.
 
 ## Scheduler settings
 

@@ -106,9 +106,17 @@ function Assert-PinnedRuntimeSurface {
     $required = @($Pin.installation_policy.installed_files)
     $actualItems = @(Get-ChildItem -LiteralPath $binPath -Force)
     $actualNames = @($actualItems | ForEach-Object { $_.Name })
-    $nameDiff = @(Compare-Object -ReferenceObject ($required | Sort-Object) -DifferenceObject ($actualNames | Sort-Object))
+    $exactNames = $actualNames.Count -eq $required.Count
+    if ($exactNames) {
+        foreach ($requiredName in $required) {
+            if (-not ($actualNames -ccontains $requiredName)) {
+                $exactNames = $false
+                break
+            }
+        }
+    }
     $nonFiles = @($actualItems | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
-    if ($nameDiff.Count -ne 0 -or $nonFiles.Count -ne 0) {
+    if (-not $exactNames -or $nonFiles.Count -ne 0) {
         throw "Pinned runtime bin surface differs from installation_policy.installed_files: $binPath"
     }
 
@@ -472,7 +480,9 @@ if ($needsRegistration) {
                     }
                     Register-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Xml $existingXmlText -Force | Out-Null
                     if ($wasRunning) {
+                        Assert-DedicatedPipeFree
                         Start-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
+                        Wait-TaskRunningAndPipe -Name $TaskName
                     }
                 } catch {
                     Write-Warning "Failed to restore previous owned task after update failure: $($_.Exception.Message)"
