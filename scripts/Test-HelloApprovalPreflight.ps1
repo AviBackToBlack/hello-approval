@@ -40,8 +40,14 @@ function Get-GitScopedValue {
         [Parameter(Mandatory = $true)][string]$Key
     )
 
-    $value = & $gitExe config ("--{0}" -f $Scope) --includes --get $Key 2>$null
-    $rc = $LASTEXITCODE
+    $oldPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $value = & $gitExe config ("--{0}" -f $Scope) --includes --get $Key 2>$null
+        $rc = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $oldPreference
+    }
     if ($rc -eq 0) {
         return ($value -join "`n")
     }
