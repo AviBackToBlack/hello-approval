@@ -311,6 +311,14 @@ if ($pin.schema -ne 'hello-approval/upstream-pin/v1') {
 if ($pin.installation_policy.target_architecture -ne 'x86_64-pc-windows-msvc') {
     throw "Unsupported pinned target architecture: $($pin.installation_policy.target_architecture)"
 }
+if ($pin.installation_policy.allowed_distribution -ne 'zip-manual-placement') {
+    throw "Unsupported pinned distribution policy: $($pin.installation_policy.allowed_distribution)"
+}
+$requiredByPolicy = @($pin.files | Where-Object { $_.policy.disposition -eq 'required' } | ForEach-Object { $_.name } | Sort-Object)
+$installedByPolicy = @($pin.installation_policy.installed_files | Sort-Object)
+if (@(Compare-Object -ReferenceObject $requiredByPolicy -DifferenceObject $installedByPolicy).Count -ne 0) {
+    throw 'Pin inconsistency: installed_files must exactly match files with policy.disposition=required.'
+}
 
 $releaseTag = [string]$pin.upstream.release_tag
 $runtimeRoot = Join-Path $env:LOCALAPPDATA ("hello-approval\runtime\sshenc\{0}" -f $releaseTag)
