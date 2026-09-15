@@ -68,7 +68,7 @@ function Ensure-RealDirectory {
         Assert-RealDirectory -Path $Path -Purpose 'Project directory'
         return
     }
-    New-Item -ItemType Directory -Path $Path | Out-Null
+    [void][System.IO.Directory]::CreateDirectory($Path)
     Assert-RealDirectory -Path $Path -Purpose 'New project directory'
 }
 
@@ -353,6 +353,13 @@ if ($null -ne $existingTask) {
     $wasRunning = $existingTask.State -eq 'Running'
 }
 
+Assert-RealDirectory -Path $projectRoot -Purpose 'hello-approval project root'
+foreach ($existingParent in @($appRoot, $launcherRoot)) {
+    if (Test-Path -LiteralPath $existingParent) {
+        Assert-RealDirectory -Path $existingParent -Purpose 'Existing launcher parent directory'
+    }
+}
+
 if (Test-Path -LiteralPath $launcherVersionRoot) {
     Assert-RealDirectory -Path $launcherVersionRoot -Purpose 'Installed launcher digest directory'
     $items = @(Get-ChildItem -LiteralPath $launcherVersionRoot -Force)
@@ -369,7 +376,7 @@ if (Test-Path -LiteralPath $launcherVersionRoot) {
     Ensure-RealDirectory -Path $launcherRoot
     $stagingRoot = Join-Path $launcherRoot ('.staging.{0}' -f [Guid]::NewGuid().ToString('N'))
     try {
-        New-Item -ItemType Directory -Path $stagingRoot | Out-Null
+        [void][System.IO.Directory]::CreateDirectory($stagingRoot)
         $stagingLauncher = Join-Path $stagingRoot 'Start-HelloApprovalAgent.ps1'
         [System.IO.File]::Copy($sourceLauncher, $stagingLauncher, $false)
         $stagedHash = Get-FileSha256 -Path $stagingLauncher
@@ -420,6 +427,11 @@ if ($needsRegistration) {
                 Wait-TaskNotRunning -Name $TaskName
             }
             Register-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description $TaskMarker -Force | Out-Null
+            $registeredXml = Get-TaskXml -Name $TaskName
+            Assert-OwnedTask -Xml $registeredXml
+            if (-not (Test-TaskMatchesDesired -Xml $registeredXml -ExpectedSid $currentSid -ExpectedUser $currentUser -ExpectedPowerShell $powershellPath -ExpectedArguments $actionArguments -ExpectedWorkingDirectory $launcherVersionRoot)) {
+                throw 'Task Scheduler did not persist the requested HA-1.3 critical definition.'
+            }
             if ($wasRunning -or $StartNow) {
                 Start-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
                 Wait-TaskRunningAndPipe -Name $TaskName
