@@ -22,10 +22,12 @@ function Parse-GitIdent {
 try {
     $expectedName = Get-OneLocalConfigValue -Key 'hello-approval.expectedName'
     $expectedEmail = Get-OneLocalConfigValue -Key 'hello-approval.expectedEmail'
-    $author = Parse-GitIdent -Value ([string](git var GIT_AUTHOR_IDENT)) -Kind 'author'
+    $authorRaw = [string](git var GIT_AUTHOR_IDENT)
     if ($LASTEXITCODE -ne 0) { throw 'git var GIT_AUTHOR_IDENT failed.' }
-    $committer = Parse-GitIdent -Value ([string](git var GIT_COMMITTER_IDENT)) -Kind 'committer'
+    $author = Parse-GitIdent -Value $authorRaw -Kind 'author'
+    $committerRaw = [string](git var GIT_COMMITTER_IDENT)
     if ($LASTEXITCODE -ne 0) { throw 'git var GIT_COMMITTER_IDENT failed.' }
+    $committer = Parse-GitIdent -Value $committerRaw -Kind 'committer'
 
     foreach ($pair in @(@('author', $author), @('committer', $committer))) {
         if ($pair[1].name -cne $expectedName -or $pair[1].email -cne $expectedEmail) {

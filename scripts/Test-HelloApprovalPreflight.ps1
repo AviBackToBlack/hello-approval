@@ -8,6 +8,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $findings = New-Object 'System.Collections.Generic.List[object]'
+$gitExe = $null
 
 function Add-Finding {
     param(
@@ -39,11 +40,16 @@ function Get-GitScopedValue {
         [Parameter(Mandatory = $true)][string]$Key
     )
 
-    $value = & git config ("--{0}" -f $Scope) --includes --get $Key 2>$null
-    if ($LASTEXITCODE -eq 0) {
+    $value = & $gitExe config ("--{0}" -f $Scope) --includes --get $Key 2>$null
+    $rc = $LASTEXITCODE
+    if ($rc -eq 0) {
         return ($value -join "`n")
     }
-    return $null
+    if ($rc -eq 1) {
+        return $null
+    }
+    Add-Finding -Severity 'BLOCK' -Check "git.$Scope.readable" -Message "Git could not read $Scope configuration with includes enabled (exit $rc). Refusing to treat unreadable configuration as absent."
+    throw "git config --$Scope --includes --get $Key failed with exit $rc."
 }
 
 try {
@@ -270,11 +276,12 @@ try {
         Add-Finding -Severity 'INFO' -Check 'ssh.config' -Message 'User SSH config does not exist.' -Value $sshConfigPath
     }
 
-    $gitCommand = Get-Command git -ErrorAction SilentlyContinue
+    $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue
     if ($null -eq $gitCommand) {
         Add-Finding -Severity 'WARN' -Check 'git.present' -Message 'Git was not found in PATH; Git configuration preflight was skipped.'
     } else {
-        Add-Finding -Severity 'PASS' -Check 'git.present' -Message 'Git is available.' -Value $gitCommand.Source
+        $gitExe = $gitCommand.Source
+        Add-Finding -Severity 'PASS' -Check 'git.present' -Message 'Git is available.' -Value $gitExe
         foreach ($scope in @('system', 'global')) {
             foreach ($key in @(
                 'core.sshCommand',

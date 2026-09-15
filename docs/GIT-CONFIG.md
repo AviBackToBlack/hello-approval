@@ -19,12 +19,14 @@ and registers it through one global `include.path`. The fragment contains:
 ```text
 gpg.format = ssh
 gpg.ssh.program = <pinned sshenc.exe>
-user.signingKey = <absolute path to ~/.ssh/github-signing.pub>
+user.signingkey = <absolute path to ~/.ssh/github-signing.pub>
 ```
 
 The fragment also contains `hello-approval.schema = hello-approval/ha-1.4/v1` as its ownership/version marker.
 
-Existing direct/global signing settings are not deleted or rewritten. If an existing global value for one of the three owned signing keys conflicts, installation refuses by default. `-OverrideExistingSigningConfig` is an explicit request to retain those old values but give the later hello-approval include precedence. If another global include later overrides the hello-approval fragment, verification fails rather than silently claiming success.
+Existing direct/global signing settings are not deleted or rewritten. If an existing global value for one of the three owned signing keys conflicts, installation refuses by default. `-OverrideExistingSigningConfig` is an explicit request to retain those old values but give the hello-approval include precedence in the context-neutral global baseline. Because the preserved conflicting values remain present, later installer runs continue to require the override switch; it is not a one-time grant. If an unconditional global include later overrides the hello-approval fragment, verification fails rather than silently claiming success.
+
+Post-write verification deliberately runs from a fresh non-repository directory with repository discovery bounded there. It proves the **context-neutral global baseline**, not every repository context. Git repository-local settings and conditional `includeIf` rules can intentionally override global values for particular repositories/branches/remotes. HA-1.4 does not try to outlaw normal Git precedence. Production acceptance and HA-1.5 local verification must therefore inspect the effective signing configuration in the target repository as well as the global baseline.
 
 ## Signing enablement is explicit
 
@@ -33,11 +35,21 @@ A default install does **not** write `commit.gpgSign` or `tag.gpgSign`.
 Use explicit intent when desired:
 
 ```powershell
+.\scripts\Install-HelloApprovalGitConfig.ps1
 .\scripts\Install-HelloApprovalGitConfig.ps1 -EnableCommitSigning
 .\scripts\Install-HelloApprovalGitConfig.ps1 -EnableCommitSigning -EnableTagSigning
+.\scripts\Install-HelloApprovalGitConfig.ps1 -OverrideExistingSigningConfig
+.\scripts\Install-HelloApprovalGitConfig.ps1 -WhatIf
 ```
 
+`-OverrideExistingSigningConfig` preserves conflicting existing global values and permits the hello-approval global baseline to take precedence; it does not delete those values. `-WhatIf` executes validation/read checks but performs no mutation.
+
 Once a hello-approval fragment has enabled one of those toggles, a later idempotent run without switches preserves it. HA-1.4 does not implement implicit disabling; broader rollback/cleanup remains HA-1.7 scope.
+
+
+## Program path semantics
+
+`gpg.ssh.program` is stored as the absolute executable path returned by the pinned runtime, using forward slashes for Git config portability. The value is **not** wrapped in literal quote characters when the path contains spaces. Git for Windows accepts an unquoted config value such as `C:/Program Files/.../ssh-keygen.exe` as an executable path; embedding literal quotes in the value changes the executable name and breaks process creation. The Windows acceptance matrix includes a real `git commit -S` with an SSH signing program under `C:/Program Files/...`.
 
 ## Public key boundary
 

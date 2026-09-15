@@ -132,8 +132,8 @@ if ($env:OS -ne 'Windows_NT') { throw 'Install-HelloApprovalGitConfig.ps1 suppor
 if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw 'LOCALAPPDATA is not available.' }
 if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { throw 'USERPROFILE is not available.' }
 
-$gitCommand = Get-Command git.exe -ErrorAction SilentlyContinue
-if ($null -eq $gitCommand) { $gitCommand = Get-Command git -ErrorAction SilentlyContinue }
+$gitCommand = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue
+if ($null -eq $gitCommand) { $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue }
 if ($null -eq $gitCommand) { throw 'Git was not found in PATH.' }
 $git = $gitCommand.Source
 & $git --version | Out-Null
@@ -176,6 +176,13 @@ if ($existingOwned) {
     $schemaValues = @(Get-GitValues -Git $git -Scope file -File $ownedConfig -Key 'hello-approval.schema')
     if ($schemaValues.Count -ne 1 -or $schemaValues[0] -ne $Schema) {
         throw "Refusing to replace unowned Git config fragment: $ownedConfig"
+    }
+    $knownOwnedKeys = @('hello-approval.schema') + $OwnedKeys + @('commit.gpgsign', 'tag.gpgsign')
+    $allOwnedKeys = @(& $git config --file $ownedConfig --name-only --list 2>$null | ForEach-Object { [string]$_ })
+    if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate existing hello-approval Git config fragment.' }
+    $unknownOwnedKeys = @($allOwnedKeys | Where-Object { $knownOwnedKeys -notcontains $_ } | Select-Object -Unique)
+    if ($unknownOwnedKeys.Count -gt 0) {
+        Write-Warning "Owned hello-approval Git config contains extra keys that will be dropped on rewrite: $($unknownOwnedKeys -join ', ')"
     }
     $commitValues = @(Get-GitValues -Git $git -Scope file -File $ownedConfig -Key 'commit.gpgsign')
     $tagValues = @(Get-GitValues -Git $git -Scope file -File $ownedConfig -Key 'tag.gpgsign')
@@ -244,22 +251,33 @@ try {
     if (@($postIncludes | Where-Object { ($_ -replace '\\','/') -eq $ownedConfigGit }).Count -ne 1) {
         throw 'Global Git config does not contain exactly one hello-approval include.path after installation.'
     }
-    foreach ($key in $OwnedKeys) {
-        $winner = @(& $git config --global --includes --get $key 2>$null)
-        if ($LASTEXITCODE -ne 0 -or $winner.Count -ne 1 -or [string]$winner[0] -ne $desired[$key]) {
-            throw "Effective global Git value for '$key' is not the hello-approval value after installation. A later global include may be overriding it."
+    # Verify the context-neutral global baseline. Repo-local config and conditional
+    # includeIf state are repository-context inputs and may intentionally override it.
+    $verifyRoot = Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-ha14-verify-{0}' -f [Guid]::NewGuid().ToString('N'))
+    [void][IO.Directory]::CreateDirectory($verifyRoot)
+    $oldCeiling = $env:GIT_CEILING_DIRECTORIES
+    try {
+        $env:GIT_CEILING_DIRECTORIES = $verifyRoot
+        foreach ($key in $OwnedKeys) {
+            $winner = @(& $git -C $verifyRoot config --global --includes --get $key 2>$null)
+            if ($LASTEXITCODE -ne 0 -or $winner.Count -ne 1 -or [string]$winner[0] -ne $desired[$key]) {
+                throw "Context-neutral global Git value for '$key' is not the hello-approval value after installation. An unconditional later global include may be overriding it."
+            }
         }
-    }
 
-    $effectiveCommit = @(& $git config --global --includes --get commit.gpgsign 2>$null)
-    $commitRc = $LASTEXITCODE
-    $effectiveTag = @(& $git config --global --includes --get tag.gpgsign 2>$null)
-    $tagRc = $LASTEXITCODE
-    if (($EnableCommitSigning -or $preserveCommitSigning) -and ($commitRc -ne 0 -or $effectiveCommit.Count -ne 1 -or $effectiveCommit[0] -ne 'true')) {
-        throw 'Explicit/preserved commit signing enablement did not become effective.'
-    }
-    if (($EnableTagSigning -or $preserveTagSigning) -and ($tagRc -ne 0 -or $effectiveTag.Count -ne 1 -or $effectiveTag[0] -ne 'true')) {
-        throw 'Explicit/preserved tag signing enablement did not become effective.'
+        $effectiveCommit = @(& $git -C $verifyRoot config --global --includes --get commit.gpgsign 2>$null)
+        $commitRc = $LASTEXITCODE
+        $effectiveTag = @(& $git -C $verifyRoot config --global --includes --get tag.gpgsign 2>$null)
+        $tagRc = $LASTEXITCODE
+        if (($EnableCommitSigning -or $preserveCommitSigning) -and ($commitRc -ne 0 -or $effectiveCommit.Count -ne 1 -or $effectiveCommit[0] -ne 'true')) {
+            throw 'Explicit/preserved commit signing enablement did not become effective in the context-neutral global baseline.'
+        }
+        if (($EnableTagSigning -or $preserveTagSigning) -and ($tagRc -ne 0 -or $effectiveTag.Count -ne 1 -or $effectiveTag[0] -ne 'true')) {
+            throw 'Explicit/preserved tag signing enablement did not become effective in the context-neutral global baseline.'
+        }
+    } finally {
+        $env:GIT_CEILING_DIRECTORIES = $oldCeiling
+        Remove-Item -LiteralPath $verifyRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     Write-Host "HA-1.4 Git signing configuration is installed and verified."
