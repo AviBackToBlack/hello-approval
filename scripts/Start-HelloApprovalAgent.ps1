@@ -139,6 +139,7 @@ public static class HelloApprovalSupervisor
     private const int JobObjectExtendedLimitInformation = 9;
     private const uint GENERIC_WRITE = 0x40000000;
     private const uint FILE_SHARE_READ = 0x00000001;
+    private const uint FILE_SHARE_WRITE = 0x00000002;
     private const uint OPEN_ALWAYS = 4;
     private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
     private const uint FILE_END = 2;
@@ -277,7 +278,7 @@ public static class HelloApprovalSupervisor
             lpSecurityDescriptor = IntPtr.Zero,
             bInheritHandle = true
         };
-        IntPtr handle = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, ref sa, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+        IntPtr handle = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, ref sa, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
         if (handle == INVALID_HANDLE_VALUE) ThrowLastError("CreateFileW(" + path + ")");
         long ignored;
         if (!SetFilePointerEx(handle, 0, out ignored, FILE_END))
