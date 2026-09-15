@@ -72,9 +72,10 @@ The task uses:
 - `ExecutionTimeLimit = PT0S` (no scheduler time limit for the long-lived agent);
 - allow start on battery;
 - do not stop merely because the machine switches to battery;
-- task remains visible in Task Scheduler for observability.
+- task remains visible in Task Scheduler for observability;
+- the task and its logon trigger must both remain enabled (Task Scheduler omits `<Enabled>` when true by default; an explicit `false` is rejected by verification).
 
-The task is not automatically started by a normal install/update. `-StartNow` is explicit because starting the task can collide with a pre-existing signing agent during migration. When requested, `-StartNow` is successful only after Task Scheduler reports the task as running **and** the dedicated named pipe is present; lack of an interactive token therefore fails visibly. A user-logon trigger remains the normal steady-state start path.
+The task is not automatically started by a normal install/update. `-StartNow` is explicit because starting the task can collide with a pre-existing signing agent during migration. Before an explicit start, the dedicated pipe must be free. When requested, `-StartNow` is successful only after Task Scheduler reports the task as running **and** the dedicated named pipe remains present together with `Running` state for a short stability window; lack of an interactive token therefore fails visibly. A user-logon trigger remains the normal steady-state start path.
 
 ## Idempotent update and rollback
 
@@ -84,10 +85,10 @@ If an owned task needs an update:
 
 1. export the existing task XML;
 2. record whether it was running;
-3. stop the running owned task before replacing its definition;
-4. register the desired definition;
+3. stop the running owned task and wait for both scheduler state and the dedicated pipe to clear before replacing its definition;
+4. register and verify the desired definition, including enabled task/trigger state;
 5. restart it only if it was running before, or if `-StartNow` was explicitly requested;
-6. if registration/start fails, restore the previous XML and previous running state where possible.
+6. if registration/start fails, first stop any possibly-running new-definition instance, wait for its pipe to clear, then restore the previous XML and previous running state where possible.
 
 No foreign task is overwritten.
 
@@ -102,3 +103,7 @@ No foreign task is overwritten.
 - does not delete sshenc config, keys, public keys, Git settings, stock-agent state, or content-addressed launcher cache.
 
 Those broader lifecycle decisions remain separate gates.
+
+## Production visual acceptance
+
+The Task Scheduler path adds one visual condition that HA-1.2 direct-launch acceptance could not prove: the system `powershell.exe` action is a console-subsystem executable. Production acceptance must explicitly watch the interactive desktop for any visible console flash both when invoking `-StartNow` and on a real user logon. A visible flash fails the no-visible-console contract and requires a new launcher/task design gate. The previously rejected `conhost.exe --headless` path remains rejected because it is not a supported hosting API and has unsuitable exit-propagation semantics; do not adopt it merely to hide a flash.

@@ -244,11 +244,15 @@ function Test-TaskMatchesDesired {
     if ($actionNodes.Count -ne 1 -or $triggerNodes.Count -ne 1) { return $false }
 
     $runLevel = Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Principals/t:Principal/t:RunLevel'
+    $taskEnabled = Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Settings/t:Enabled'
+    $triggerEnabled = Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Triggers/t:LogonTrigger/t:Enabled'
     $checks = @(
         ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:RegistrationInfo/t:Description') -eq $TaskMarker),
         ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Principals/t:Principal/t:UserId') -eq $ExpectedSid),
         ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Principals/t:Principal/t:LogonType') -eq 'InteractiveToken'),
         (($null -eq $runLevel) -or $runLevel -eq 'LeastPrivilege'),
+        (($null -eq $taskEnabled) -or $taskEnabled -eq 'true'),
+        (($null -eq $triggerEnabled) -or $triggerEnabled -eq 'true'),
         ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Triggers/t:LogonTrigger/t:UserId') -eq $ExpectedUser),
         ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Actions/t:Exec/t:Command') -ieq $ExpectedPowerShell),
         ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Actions/t:Exec/t:Arguments') -eq $ExpectedArguments),
@@ -263,32 +267,52 @@ function Test-TaskMatchesDesired {
     return -not ($checks -contains $false)
 }
 
+function Test-DedicatedPipePresent {
+    $pipeLeaf = ($SocketPath -replace '^\\\\\.\\pipe\\', '')
+    return @([IO.Directory]::GetFiles('\\.\pipe\') | ForEach-Object { [IO.Path]::GetFileName($_) } | Where-Object { $_ -ieq $pipeLeaf }).Count -gt 0
+}
+
 function Wait-TaskNotRunning {
-    param([Parameter(Mandatory = $true)][string]$Name)
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [switch]$RequirePipeFree
+    )
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
     do {
         $task = Get-ScheduledTask -TaskName $Name -TaskPath $TaskPath -ErrorAction Stop
-        if ($task.State -ne 'Running') { return }
+        $pipePresent = Test-DedicatedPipePresent
+        if ($task.State -ne 'Running' -and (-not $RequirePipeFree -or -not $pipePresent)) { return }
         Start-Sleep -Milliseconds 200
     } while ([DateTime]::UtcNow -lt $deadline)
-    throw "Timed out waiting for task to stop: $TaskPath$Name"
+    throw "Timed out waiting for task to stop$(if ($RequirePipeFree) { ' and dedicated pipe to become free' }): $TaskPath$Name"
+}
+
+function Assert-DedicatedPipeFree {
+    if (Test-DedicatedPipePresent) {
+        throw "Dedicated signing pipe is already occupied before task start: $SocketPath"
+    }
 }
 
 function Wait-TaskRunningAndPipe {
     param([Parameter(Mandatory = $true)][string]$Name)
 
-    $pipeLeaf = ($SocketPath -replace '^\\\\\.\\pipe\\', '')
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    $stableSince = $null
     do {
         $task = Get-ScheduledTask -TaskName $Name -TaskPath $TaskPath -ErrorAction Stop
-        $pipePresent = @([IO.Directory]::GetFiles('\\.\pipe\') | ForEach-Object { [IO.Path]::GetFileName($_) } | Where-Object { $_ -ieq $pipeLeaf }).Count -gt 0
-        if ($task.State -eq 'Running' -and $pipePresent) { return }
+        $pipePresent = Test-DedicatedPipePresent
+        if ($task.State -eq 'Running' -and $pipePresent) {
+            if ($null -eq $stableSince) { $stableSince = [DateTime]::UtcNow }
+            if (([DateTime]::UtcNow - $stableSince).TotalMilliseconds -ge 600) { return }
+        } else {
+            $stableSince = $null
+        }
         Start-Sleep -Milliseconds 200
     } while ([DateTime]::UtcNow -lt $deadline)
 
     $info = Get-ScheduledTaskInfo -TaskName $Name -TaskPath $TaskPath -ErrorAction SilentlyContinue
     $resultText = if ($null -eq $info) { 'unknown' } else { '0x{0:X8}' -f ([uint32]$info.LastTaskResult) }
-    throw "Task did not reach Running state with dedicated pipe within 10 seconds (state=$($task.State), lastResult=$resultText)."
+    throw "Task did not remain Running with dedicated pipe for 600 ms within 10 seconds (state=$($task.State), lastResult=$resultText)."
 }
 
 if ($env:OS -ne 'Windows_NT') {
@@ -424,7 +448,7 @@ if ($needsRegistration) {
         try {
             if ($null -ne $existingTask -and $wasRunning) {
                 Stop-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
-                Wait-TaskNotRunning -Name $TaskName
+                Wait-TaskNotRunning -Name $TaskName -RequirePipeFree
             }
             Register-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description $TaskMarker -Force | Out-Null
             $registeredXml = Get-TaskXml -Name $TaskName
@@ -433,6 +457,7 @@ if ($needsRegistration) {
                 throw 'Task Scheduler did not persist the requested HA-1.3 critical definition.'
             }
             if ($wasRunning -or $StartNow) {
+                Assert-DedicatedPipeFree
                 Start-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
                 Wait-TaskRunningAndPipe -Name $TaskName
             }
@@ -440,6 +465,11 @@ if ($needsRegistration) {
             $originalError = $_
             if ($null -ne $existingXmlText) {
                 try {
+                    $failedTask = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
+                    if ($null -ne $failedTask -and $failedTask.State -eq 'Running') {
+                        Stop-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
+                        Wait-TaskNotRunning -Name $TaskName -RequirePipeFree
+                    }
                     Register-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Xml $existingXmlText -Force | Out-Null
                     if ($wasRunning) {
                         Start-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
@@ -460,6 +490,7 @@ if ($needsRegistration) {
 } elseif ($StartNow) {
     $currentTask = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
     if ($currentTask.State -ne 'Running' -and $PSCmdlet.ShouldProcess("$TaskPath$TaskName", 'Start existing owned Scheduled Task')) {
+        Assert-DedicatedPipeFree
         Start-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
         Wait-TaskRunningAndPipe -Name $TaskName
     } elseif ($currentTask.State -eq 'Running') {
