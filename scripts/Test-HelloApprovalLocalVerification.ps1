@@ -66,6 +66,8 @@ $gitCommand = Get-Command git.exe -CommandType Application -ErrorAction Silently
 if ($null -eq $gitCommand) { $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue }
 if ($null -eq $gitCommand) { throw 'Git was not found in PATH.' }
 $git = $gitCommand.Source
+$systemSshKeygen = Assert-RegularFile -Path (Join-Path $env:SystemRoot 'System32\OpenSSH\ssh-keygen.exe') -Purpose 'stock Windows OpenSSH verifier'
+$verificationProgram = $systemSshKeygen -replace '\\','/'
 
 $repoPath = [IO.Path]::GetFullPath($Repo)
 $isWorkTree = Get-GitOne -Git $git -Arguments @('-C', $repoPath, 'rev-parse', '--is-inside-work-tree') -Context 'Check repository worktree'
@@ -103,23 +105,23 @@ if ($keyParts.Count -lt 2 -or $keyParts[0] -cne $trustType -or $keyParts[1] -cne
     throw 'allowed_signers key does not match the canonical hello-approval Git signing public key.'
 }
 
-$verify = Invoke-GitCommand -Git $git -Arguments @('-C', $repoPath, 'verify-commit', $resolvedCommit) -Context "git verify-commit $resolvedCommit" -AllowExitOne -IncludeStderr
+$verify = Invoke-GitCommand -Git $git -Arguments @('-c', "gpg.ssh.program=$verificationProgram", '-C', $repoPath, 'verify-commit', $resolvedCommit) -Context "git verify-commit $resolvedCommit" -AllowExitOne -IncludeStderr
 if ($verify.ExitCode -ne 0) {
     $detail = if ($verify.Output.Count -gt 0) { $verify.Output -join ' | ' } else { '<no output>' }
     throw "git verify-commit rejected $resolvedCommit. $detail"
 }
 
-$status = Get-GitOne -Git $git -Arguments @('-C', $repoPath, 'log', '-1', '--format=%G?', $resolvedCommit) -Context 'Read Git signature status'
-$signer = Get-GitOne -Git $git -Arguments @('-C', $repoPath, 'log', '-1', '--format=%GS', $resolvedCommit) -Context 'Read Git signature principal'
-$keyFingerprint = Get-GitOne -Git $git -Arguments @('-C', $repoPath, 'log', '-1', '--format=%GK', $resolvedCommit) -Context 'Read Git signature key fingerprint'
-$trust = Get-GitOne -Git $git -Arguments @('-C', $repoPath, 'log', '-1', '--format=%GT', $resolvedCommit) -Context 'Read Git signature trust level'
+$status = Get-GitOne -Git $git -Arguments @('-c', "gpg.ssh.program=$verificationProgram", '-C', $repoPath, 'log', '-1', '--format=%G?', $resolvedCommit) -Context 'Read Git signature status'
+$signer = Get-GitOne -Git $git -Arguments @('-c', "gpg.ssh.program=$verificationProgram", '-C', $repoPath, 'log', '-1', '--format=%GS', $resolvedCommit) -Context 'Read Git signature principal'
+$keyFingerprint = Get-GitOne -Git $git -Arguments @('-c', "gpg.ssh.program=$verificationProgram", '-C', $repoPath, 'log', '-1', '--format=%GK', $resolvedCommit) -Context 'Read Git signature key fingerprint'
+$trust = Get-GitOne -Git $git -Arguments @('-c', "gpg.ssh.program=$verificationProgram", '-C', $repoPath, 'log', '-1', '--format=%GT', $resolvedCommit) -Context 'Read Git signature trust level'
 
 if ($status -ne 'G') { throw "Git signature status is '$status', expected 'G'." }
 if ($trust -ne 'fully') { throw "Git SSH signature trust is '$trust', expected 'fully'." }
 if ($signer -cne $principal) { throw "Git reported signer principal '$signer', expected '$principal' from the project-owned trust store." }
 if ([string]::IsNullOrWhiteSpace($keyFingerprint)) { throw 'Git did not report a signing-key fingerprint.' }
 
-$display = Invoke-GitCommand -Git $git -Arguments @('-C', $repoPath, 'log', '-1', '--show-signature', '--format=fuller', $resolvedCommit) -Context 'git log --show-signature' -IncludeStderr
+$display = Invoke-GitCommand -Git $git -Arguments @('-c', "gpg.ssh.program=$verificationProgram", '-C', $repoPath, 'log', '-1', '--show-signature', '--format=fuller', $resolvedCommit) -Context 'git log --show-signature' -IncludeStderr
 
 Write-Host 'HA-1.5 LOCAL VERIFICATION: PASS' -ForegroundColor Green
 Write-Host "Commit: $resolvedCommit"
@@ -127,6 +129,7 @@ Write-Host "Principal: $principal"
 Write-Host "Key fingerprint: $keyFingerprint"
 Write-Host "Trust: $trust"
 Write-Host "Trust store: $allowedPath"
+Write-Host "Verifier: $systemSshKeygen"
 Write-Host 'Note: the allowed_signers principal is a local trust label for the key; it is not automatically compared with Git author/committer identity.'
 Write-Host '--- git log --show-signature ---'
 $display.Output | ForEach-Object { Write-Host $_ }

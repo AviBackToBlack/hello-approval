@@ -76,7 +76,7 @@ The verifier requires all of the following:
 - Git `%GS` equals the explicit principal from the trust store;
 - Git reports a non-empty signing-key fingerprint.
 
-`git verify-commit` is the authoritative command gate in this slice.
+`git verify-commit` is the authoritative command gate in this slice. Verification forces `gpg.ssh.program` process-locally to the stock Windows OpenSSH `%SystemRoot%\System32\OpenSSH\ssh-keygen.exe`; it does not persistently change Git configuration. This keeps the local verifier independent from the `sshenc` signing broker used to create the signature.
 
 ## `git log --show-signature` is evidence, not the exit-code gate
 
