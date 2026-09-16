@@ -1,0 +1,320 @@
+#requires -Version 5.1
+[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
+param(
+    [switch]$EnableCommitSigning,
+    [switch]$EnableTagSigning,
+    [switch]$OverrideExistingSigningConfig
+)
+
+Set-StrictMode -Version 2.0
+$ErrorActionPreference = 'Stop'
+
+$Schema = 'hello-approval/ha-1.4/v1'
+$PublicKeyLeaf = 'github-signing.pub'
+$ExpectedKeyType = 'sk-ecdsa-sha2-nistp256@openssh.com'
+$OwnedKeys = @('gpg.format', 'gpg.ssh.program', 'user.signingkey')
+
+function Get-FileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose(); $stream.Dispose() }
+}
+
+function Assert-RegularFile {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Purpose)
+    if (-not [IO.Path]::IsPathRooted($Path)) { throw "$Purpose path must be absolute: $Path" }
+    $full = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "$Purpose is missing: $full" }
+    $item = Get-Item -LiteralPath $full -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "$Purpose must be a real non-reparse file: $full"
+    }
+    return $full
+}
+
+function Assert-RealDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Purpose)
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { throw "$Purpose is missing: $Path" }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "$Purpose must be a real non-reparse directory: $Path"
+    }
+}
+
+function Ensure-RealDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (Test-Path -LiteralPath $Path) {
+        Assert-RealDirectory -Path $Path -Purpose 'hello-approval Git configuration directory'
+        return
+    }
+    [void][IO.Directory]::CreateDirectory($Path)
+    Assert-RealDirectory -Path $Path -Purpose 'hello-approval Git configuration directory'
+}
+
+function Assert-PinnedRuntimeSurface {
+    param([Parameter(Mandatory = $true)][string]$RuntimeRoot, [Parameter(Mandatory = $true)][object]$Pin)
+    Assert-RealDirectory -Path $RuntimeRoot -Purpose 'Pinned runtime root'
+    $rootItems = @(Get-ChildItem -LiteralPath $RuntimeRoot -Force)
+    if ($rootItems.Count -ne 1 -or $rootItems[0].Name -cne 'bin' -or -not $rootItems[0].PSIsContainer -or ($rootItems[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Pinned runtime root surface must contain exactly one real bin directory: $RuntimeRoot"
+    }
+    $bin = Join-Path $RuntimeRoot 'bin'
+    $required = @($Pin.installation_policy.installed_files)
+    $items = @(Get-ChildItem -LiteralPath $bin -Force)
+    $names = @($items | ForEach-Object { $_.Name })
+    if ($names.Count -ne $required.Count) { throw "Pinned runtime bin surface differs from installed_files: $bin" }
+    foreach ($name in $required) {
+        if (-not ($names -ccontains $name)) { throw "Pinned runtime bin surface is missing exact file '$name': $bin" }
+        $pinFile = $Pin.files | Where-Object { $_.name -ceq $name -and $_.policy.disposition -eq 'required' } | Select-Object -First 1
+        if ($null -eq $pinFile) { throw "Required runtime file '$name' has no required provenance record." }
+        $path = Assert-RegularFile -Path (Join-Path $bin $name) -Purpose "Pinned $name"
+        $item = Get-Item -LiteralPath $path -Force
+        if ($item.Length -ne [int64]$pinFile.size_bytes -or (Get-FileSha256 -Path $path) -ne ([string]$pinFile.sha256).ToLowerInvariant()) {
+            throw "Pinned runtime file does not match provenance: $path"
+        }
+    }
+}
+
+function Invoke-GitCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$Git,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Context,
+        [switch]$AllowExitOne
+    )
+
+    $savedErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 can promote native stderr to NativeCommandError
+        # while EAP=Stop, before callers get a chance to inspect LASTEXITCODE.
+        # Classify native Git by its process exit code instead.
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $Git @Arguments 2>$null | ForEach-Object { [string]$_ })
+        $rc = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedErrorActionPreference
+    }
+
+    if ($rc -eq 0 -or ($AllowExitOne -and $rc -eq 1)) {
+        return [pscustomobject]@{
+            ExitCode = $rc
+            Output   = $output
+        }
+    }
+    throw "$Context failed with exit $rc."
+}
+
+function Get-GitValues {
+    param(
+        [Parameter(Mandatory = $true)][string]$Git,
+        [Parameter(Mandatory = $true)][ValidateSet('global','system','file')][string]$Scope,
+        [Parameter(Mandatory = $true)][string]$Key,
+        [string]$File
+    )
+    $arguments = if ($Scope -eq 'file') { @('config', '--file', $File, '--get-all', $Key) }
+        elseif ($Scope -eq 'global') { @('config', '--global', '--includes', '--get-all', $Key) }
+        else { @('config', '--system', '--get-all', $Key) }
+    $result = Invoke-GitCommand -Git $Git -Arguments $arguments -Context "git config --$Scope --get-all $Key" -AllowExitOne
+    if ($result.ExitCode -eq 1) { return @() }
+    return @($result.Output)
+}
+
+function Get-DirectGlobalValues {
+    param([Parameter(Mandatory = $true)][string]$Git, [Parameter(Mandatory = $true)][string]$Key)
+    $result = Invoke-GitCommand -Git $Git -Arguments @('config', '--global', '--get-all', $Key) -Context "git config --global --get-all $Key" -AllowExitOne
+    if ($result.ExitCode -eq 1) { return @() }
+    return @($result.Output)
+}
+
+function Set-ConfigValue {
+    param([string]$Git, [string]$File, [string]$Key, [string]$Value)
+    [void](Invoke-GitCommand -Git $Git -Arguments @('config', '--file', $File, '--replace-all', $Key, $Value) -Context "git config --file <staged> --replace-all $Key")
+}
+
+function Get-GlobalWritePath {
+    param([string]$Git)
+    $result = Invoke-GitCommand -Git $Git -Arguments @('var', 'GIT_CONFIG_GLOBAL') -Context 'git var GIT_CONFIG_GLOBAL'
+    $paths = @($result.Output | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
+    if ($paths.Count -lt 1) { throw 'Git did not report a global configuration path.' }
+    $path = $paths[$paths.Count - 1] -replace '/', '\'
+    if (-not [IO.Path]::IsPathRooted($path)) { throw "Git global write path is not absolute: $path" }
+    return [IO.Path]::GetFullPath($path)
+}
+
+function Restore-FileSnapshot {
+    param([string]$Path, [bool]$Existed, [byte[]]$Bytes)
+    if ($Existed) {
+        $parent = Split-Path -Parent $Path
+        if (-not (Test-Path -LiteralPath $parent -PathType Container)) { [void][IO.Directory]::CreateDirectory($parent) }
+        [IO.File]::WriteAllBytes($Path, $Bytes)
+    } elseif (Test-Path -LiteralPath $Path) {
+        Remove-Item -LiteralPath $Path -Force
+    }
+}
+
+if ($env:OS -ne 'Windows_NT') { throw 'Install-HelloApprovalGitConfig.ps1 supports Windows only.' }
+if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw 'LOCALAPPDATA is not available.' }
+if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { throw 'USERPROFILE is not available.' }
+
+$gitCommand = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue
+if ($null -eq $gitCommand) { $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue }
+if ($null -eq $gitCommand) { throw 'Git was not found in PATH.' }
+$git = $gitCommand.Source
+[void](Invoke-GitCommand -Git $git -Arguments @('--version') -Context 'Git executable version probe')
+
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$pin = Get-Content -LiteralPath (Join-Path $repoRoot 'provenance\sshenc-v0.6.101.json') -Raw | ConvertFrom-Json
+if ($pin.schema -ne 'hello-approval/upstream-pin/v1') { throw "Unsupported provenance pin schema: $($pin.schema)" }
+if ($pin.installation_policy.allowed_distribution -ne 'zip-manual-placement') { throw 'Pinned distribution policy is not zip-manual-placement.' }
+$requiredByPolicy = @($pin.files | Where-Object { $_.policy.disposition -eq 'required' } | ForEach-Object { $_.name } | Sort-Object)
+$installedByPolicy = @($pin.installation_policy.installed_files | Sort-Object)
+if (@(Compare-Object -ReferenceObject $requiredByPolicy -DifferenceObject $installedByPolicy -CaseSensitive).Count -ne 0) {
+    throw 'Pin inconsistency: installed_files must exactly match files with policy.disposition=required.'
+}
+
+$runtimeRoot = Join-Path $env:LOCALAPPDATA ("hello-approval\runtime\sshenc\{0}" -f [string]$pin.upstream.release_tag)
+Assert-PinnedRuntimeSurface -RuntimeRoot $runtimeRoot -Pin $pin
+$sshencPath = [IO.Path]::GetFullPath((Join-Path $runtimeRoot 'bin\sshenc.exe'))
+$publicKeyPath = Assert-RegularFile -Path (Join-Path $env:USERPROFILE ".ssh\$PublicKeyLeaf") -Purpose 'Git signing public key'
+$keyLines = @(Get-Content -LiteralPath $publicKeyPath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+if ($keyLines.Count -ne 1) { throw "Signing public key must contain exactly one non-empty line: $publicKeyPath" }
+$keyParts = @($keyLines[0] -split '\s+')
+if ($keyParts.Count -lt 2 -or $keyParts[0] -cne $ExpectedKeyType) {
+    throw "Signing public key must be an $ExpectedKeyType key: $publicKeyPath"
+}
+
+$projectRoot = Join-Path $env:LOCALAPPDATA 'hello-approval'
+Assert-RealDirectory -Path $projectRoot -Purpose 'hello-approval project root'
+$gitRoot = Join-Path $projectRoot 'git'
+if (Test-Path -LiteralPath $gitRoot) { Assert-RealDirectory -Path $gitRoot -Purpose 'hello-approval Git configuration directory' }
+$ownedConfig = Join-Path $gitRoot 'signing.gitconfig'
+$ownedConfigGit = $ownedConfig -replace '\\', '/'
+$globalWritePath = Get-GlobalWritePath -Git $git
+
+$existingOwned = Test-Path -LiteralPath $ownedConfig -PathType Leaf
+$preserveCommitSigning = $false
+$preserveTagSigning = $false
+if ($existingOwned) {
+    $ownedConfig = Assert-RegularFile -Path $ownedConfig -Purpose 'hello-approval owned Git config'
+    $schemaValues = @(Get-GitValues -Git $git -Scope file -File $ownedConfig -Key 'hello-approval.schema')
+    if ($schemaValues.Count -ne 1 -or $schemaValues[0] -ne $Schema) {
+        throw "Refusing to replace unowned Git config fragment: $ownedConfig"
+    }
+    $knownOwnedKeys = @('hello-approval.schema') + $OwnedKeys + @('commit.gpgsign', 'tag.gpgsign')
+    $enumeration = Invoke-GitCommand -Git $git -Arguments @('config', '--file', $ownedConfig, '--name-only', '--list') -Context 'Enumerate existing hello-approval Git config fragment'
+    $allOwnedKeys = @($enumeration.Output)
+    $unknownOwnedKeys = @($allOwnedKeys | Where-Object { $knownOwnedKeys -notcontains $_ } | Select-Object -Unique)
+    if ($unknownOwnedKeys.Count -gt 0) {
+        Write-Warning "Owned hello-approval Git config contains extra keys that will be dropped on rewrite: $($unknownOwnedKeys -join ', ')"
+    }
+    $commitValues = @(Get-GitValues -Git $git -Scope file -File $ownedConfig -Key 'commit.gpgsign')
+    $tagValues = @(Get-GitValues -Git $git -Scope file -File $ownedConfig -Key 'tag.gpgsign')
+    if ($commitValues.Count -gt 1 -or ($commitValues.Count -eq 1 -and $commitValues[0] -ne 'true')) { throw 'Owned fragment has unexpected commit.gpgSign state.' }
+    if ($tagValues.Count -gt 1 -or ($tagValues.Count -eq 1 -and $tagValues[0] -ne 'true')) { throw 'Owned fragment has unexpected tag.gpgSign state.' }
+    $preserveCommitSigning = $commitValues.Count -eq 1
+    $preserveTagSigning = $tagValues.Count -eq 1
+} elseif (Test-Path -LiteralPath $ownedConfig) {
+    throw "Owned Git config path exists but is not a regular file: $ownedConfig"
+}
+
+$desired = @{
+    'gpg.format' = 'ssh'
+    'gpg.ssh.program' = ($sshencPath -replace '\\', '/')
+    'user.signingkey' = ($publicKeyPath -replace '\\', '/')
+}
+foreach ($key in $OwnedKeys) {
+    $values = @(Get-GitValues -Git $git -Scope global -Key $key)
+    $conflicts = @($values | Where-Object { $_ -ne $desired[$key] })
+    if ($conflicts.Count -gt 0 -and -not $OverrideExistingSigningConfig) {
+        throw "Existing global Git setting '$key' conflicts with hello-approval. Re-run with -OverrideExistingSigningConfig to preserve it but give the hello-approval include later precedence. Existing values: $($values -join '; ')"
+    }
+}
+
+$directIncludes = @(Get-DirectGlobalValues -Git $git -Key 'include.path')
+$ourIncludeCount = @($directIncludes | Where-Object { ($_ -replace '\\','/') -eq $ownedConfigGit }).Count
+if ($ourIncludeCount -gt 1) { throw "Global Git config contains duplicate hello-approval include.path entries: $ownedConfigGit" }
+
+if (-not $PSCmdlet.ShouldProcess($ownedConfig, 'Install/update hello-approval Git signing config and global include')) { return }
+
+Ensure-RealDirectory -Path $gitRoot
+$stage = Join-Path $gitRoot ('.signing.gitconfig.staging.{0}' -f [Guid]::NewGuid().ToString('N'))
+$ownedExisted = Test-Path -LiteralPath $ownedConfig
+$ownedBytes = if ($ownedExisted) { [IO.File]::ReadAllBytes($ownedConfig) } else { $null }
+$globalExisted = Test-Path -LiteralPath $globalWritePath
+$globalBytes = if ($globalExisted) { [IO.File]::ReadAllBytes($globalWritePath) } else { $null }
+
+try {
+    Set-ConfigValue -Git $git -File $stage -Key 'hello-approval.schema' -Value $Schema
+    Set-ConfigValue -Git $git -File $stage -Key 'gpg.format' -Value $desired['gpg.format']
+    Set-ConfigValue -Git $git -File $stage -Key 'gpg.ssh.program' -Value $desired['gpg.ssh.program']
+    Set-ConfigValue -Git $git -File $stage -Key 'user.signingkey' -Value $desired['user.signingkey']
+    if ($EnableCommitSigning -or $preserveCommitSigning) { Set-ConfigValue -Git $git -File $stage -Key 'commit.gpgsign' -Value 'true' }
+    if ($EnableTagSigning -or $preserveTagSigning) { Set-ConfigValue -Git $git -File $stage -Key 'tag.gpgsign' -Value 'true' }
+
+    foreach ($key in @('hello-approval.schema') + $OwnedKeys) {
+        $expected = if ($key -eq 'hello-approval.schema') { $Schema } else { $desired[$key] }
+        $values = @(Get-GitValues -Git $git -Scope file -File $stage -Key $key)
+        if ($values.Count -ne 1 -or $values[0] -ne $expected) { throw "Staged Git config failed verification for $key." }
+    }
+
+    if ($ownedExisted) {
+        $backup = Join-Path $gitRoot ('.signing.gitconfig.backup.{0}' -f [Guid]::NewGuid().ToString('N'))
+        [IO.File]::Replace($stage, $ownedConfig, $backup, $true)
+        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+    } else {
+        [IO.File]::Move($stage, $ownedConfig)
+    }
+
+    if ($ourIncludeCount -eq 0) {
+        [void](Invoke-GitCommand -Git $git -Arguments @('config', '--global', '--add', 'include.path', $ownedConfigGit) -Context 'Register hello-approval include.path in global Git config')
+    }
+
+    $postIncludes = @(Get-DirectGlobalValues -Git $git -Key 'include.path')
+    if (@($postIncludes | Where-Object { ($_ -replace '\\','/') -eq $ownedConfigGit }).Count -ne 1) {
+        throw 'Global Git config does not contain exactly one hello-approval include.path after installation.'
+    }
+    # Verify the context-neutral global baseline. Repo-local config and conditional
+    # includeIf state are repository-context inputs and may intentionally override it.
+    $verifyRoot = Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-ha14-verify-{0}' -f [Guid]::NewGuid().ToString('N'))
+    [void][IO.Directory]::CreateDirectory($verifyRoot)
+    $oldCeiling = $env:GIT_CEILING_DIRECTORIES
+    try {
+        $env:GIT_CEILING_DIRECTORIES = $verifyRoot
+        foreach ($key in $OwnedKeys) {
+            $probe = Invoke-GitCommand -Git $git -Arguments @('-C', $verifyRoot, 'config', '--global', '--includes', '--get', $key) -Context "Verify context-neutral global Git value for '$key'" -AllowExitOne
+            $winner = @($probe.Output)
+            if ($probe.ExitCode -ne 0 -or $winner.Count -ne 1 -or [string]$winner[0] -ne $desired[$key]) {
+                throw "Context-neutral global Git value for '$key' is not the hello-approval value after installation. An unconditional later global include may be overriding it."
+            }
+        }
+
+        $commitProbe = Invoke-GitCommand -Git $git -Arguments @('-C', $verifyRoot, 'config', '--global', '--includes', '--get', 'commit.gpgsign') -Context 'Read context-neutral global commit.gpgsign' -AllowExitOne
+        $tagProbe = Invoke-GitCommand -Git $git -Arguments @('-C', $verifyRoot, 'config', '--global', '--includes', '--get', 'tag.gpgsign') -Context 'Read context-neutral global tag.gpgsign' -AllowExitOne
+        $effectiveCommit = @($commitProbe.Output)
+        $effectiveTag = @($tagProbe.Output)
+        if (($EnableCommitSigning -or $preserveCommitSigning) -and ($commitProbe.ExitCode -ne 0 -or $effectiveCommit.Count -ne 1 -or $effectiveCommit[0] -ne 'true')) {
+            throw 'Explicit/preserved commit signing enablement did not become effective in the context-neutral global baseline.'
+        }
+        if (($EnableTagSigning -or $preserveTagSigning) -and ($tagProbe.ExitCode -ne 0 -or $effectiveTag.Count -ne 1 -or $effectiveTag[0] -ne 'true')) {
+            throw 'Explicit/preserved tag signing enablement did not become effective in the context-neutral global baseline.'
+        }
+    } finally {
+        $env:GIT_CEILING_DIRECTORIES = $oldCeiling
+        Remove-Item -LiteralPath $verifyRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    Write-Host "HA-1.4 Git signing configuration is installed and verified."
+    Write-Host "Owned config: $ownedConfig"
+    Write-Host "Global include: $ownedConfigGit"
+    Write-Host "Commit signing enabled by hello-approval: $($EnableCommitSigning -or $preserveCommitSigning)"
+    Write-Host "Tag signing enabled by hello-approval: $($EnableTagSigning -or $preserveTagSigning)"
+    Write-Host 'Author identity was not modified.'
+} catch {
+    $original = $_
+    try { Restore-FileSnapshot -Path $globalWritePath -Existed $globalExisted -Bytes $globalBytes } catch { Write-Warning "Failed to restore global Git config snapshot: $($_.Exception.Message)" }
+    try { Restore-FileSnapshot -Path $ownedConfig -Existed $ownedExisted -Bytes $ownedBytes } catch { Write-Warning "Failed to restore hello-approval Git config fragment: $($_.Exception.Message)" }
+    if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue }
+    throw $original
+}
