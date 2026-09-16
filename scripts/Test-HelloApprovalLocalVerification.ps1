@@ -133,4 +133,3 @@ Write-Host "Verifier: $systemSshKeygen"
 Write-Host 'Note: the allowed_signers principal is a local trust label for the key; it is not automatically compared with Git author/committer identity.'
 Write-Host '--- git log --show-signature ---'
 $display.Output | ForEach-Object { Write-Host $_ }
-exit 0
