@@ -131,7 +131,7 @@ Generic artifact/release/infrastructure/automation approval is architecture work
 
 See [Architecture](docs/ARCHITECTURE.md) and [Threat model](docs/THREAT-MODEL.md).
 
-Implementation sequencing is tracked in [ROADMAP.md](ROADMAP.md). The Windows v0.1 runtime contract is documented in [Runtime layout and configuration](docs/RUNTIME-LAYOUT.md), the no-visible-console process/lifecycle design in [Invisible interactive agent launcher](docs/LAUNCHER.md), and the per-user Task Scheduler integration in [Scheduled Task installation](docs/SCHEDULED-TASK.md).
+Implementation sequencing is tracked in [ROADMAP.md](ROADMAP.md). The Windows v0.1 runtime contract is documented in [Runtime layout and configuration](docs/RUNTIME-LAYOUT.md), the no-visible-console process/lifecycle design in [Invisible interactive agent launcher](docs/LAUNCHER.md), the per-user Task Scheduler integration in [Scheduled Task installation](docs/SCHEDULED-TASK.md), Git signing configuration in [Git signing configuration](docs/GIT-CONFIG.md), and local trust semantics in [Local Git signature verification](docs/LOCAL-VERIFICATION.md).
 
 ## Security status
 

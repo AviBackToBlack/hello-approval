@@ -1,0 +1,2 @@
+# hello-approval/ha-1.5/v1
+principal@example.invalid namespaces="git" sk-ecdsa-sha2-nistp256@openssh.com AAAA_REPLACE_WITH_CANONICAL_PUBLIC_KEY_BLOB
