@@ -162,7 +162,7 @@ user.signingkey = <path-to-public-key>
 
 `commit.gpgsign = true` and `tag.gpgsign = true` are separate opt-in settings and are written only after explicit user intent. HA-1.4 keeps author identity (`user.name` / `user.email`) separate and uses a project-owned global include fragment so conflicting pre-existing user settings are preserved rather than silently overwritten. See [Git signing configuration](GIT-CONFIG.md).
 
-Local verification additionally uses an `allowed_signers` file.
+Local verification additionally uses a project-owned `allowed_signers` trust store plus a separate verification config fragment. The v0.1 trust entry is restricted to the SSH signature namespace `git`. Its principal is an explicit local trust-policy label for the key; Git does not automatically bind that principal to commit author/committer identity. See [Local Git signature verification](LOCAL-VERIFICATION.md).
 
 The reference implementation does not configure ordinary SSH transport credentials.
 
