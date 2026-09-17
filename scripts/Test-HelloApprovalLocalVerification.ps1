@@ -3,7 +3,8 @@
 param(
     [string]$Repo = '.',
     [string]$Commit = 'HEAD',
-    [string]$ExpectedPrincipal
+    [string]$ExpectedPrincipal,
+    [string]$ExpectedKeyFingerprint
 )
 
 Set-StrictMode -Version 2.0
@@ -96,6 +97,9 @@ $git = $gitCommand.Source
 $systemSshKeygen = Assert-RegularFile -Path (Get-StockOpenSshVerifierPath) -Purpose 'stock Windows OpenSSH verifier'
 $verificationProgram = $systemSshKeygen -replace '\\','/'
 if (-not [string]::IsNullOrEmpty($ExpectedPrincipal)) { Assert-ExactPrincipal -Value $ExpectedPrincipal -Purpose 'ExpectedPrincipal' }
+if (-not [string]::IsNullOrEmpty($ExpectedKeyFingerprint) -and $ExpectedKeyFingerprint -notmatch '\ASHA256:[A-Za-z0-9+/]+={0,2}\z') {
+    throw "ExpectedKeyFingerprint must be one exact SHA256 OpenSSH fingerprint, got: $ExpectedKeyFingerprint"
+}
 
 $repoPath = [IO.Path]::GetFullPath($Repo)
 $isWorkTree = Get-GitOne -Git $git -Arguments @('-C', $repoPath, 'rev-parse', '--is-inside-work-tree') -Context 'Check repository worktree'
@@ -142,6 +146,9 @@ if ($fingerprintProbe.Output.Count -ne 1 -or $fingerprintProbe.Output[0] -notmat
     throw 'Could not parse canonical public-key fingerprint from stock OpenSSH.'
 }
 $expectedFingerprint = [string]$Matches.fingerprint
+if (-not [string]::IsNullOrEmpty($ExpectedKeyFingerprint) -and $expectedFingerprint -cne $ExpectedKeyFingerprint) {
+    throw "Canonical public-key fingerprint '$expectedFingerprint' does not match externally expected fingerprint '$ExpectedKeyFingerprint'."
+}
 
 $verify = Invoke-GitCommand -Git $git -Arguments @('-c', "gpg.ssh.program=$verificationProgram", '-C', $repoPath, 'verify-commit', $resolvedCommit) -Context "git verify-commit $resolvedCommit" -AllowExitOne -IncludeStderr
 if ($verify.ExitCode -ne 0) {
@@ -166,6 +173,7 @@ Write-Host 'HA-1.5 LOCAL VERIFICATION: PASS' -ForegroundColor Green
 Write-Host "Commit: $resolvedCommit"
 Write-Host "Principal: $principal"
 if (-not [string]::IsNullOrEmpty($ExpectedPrincipal)) { Write-Host "Expected principal anchor: $ExpectedPrincipal" }
+if (-not [string]::IsNullOrEmpty($ExpectedKeyFingerprint)) { Write-Host "Expected key fingerprint anchor: $ExpectedKeyFingerprint" }
 Write-Host "Key fingerprint: $keyFingerprint"
 Write-Host "Trust: $trust"
 Write-Host "Trust store: $allowedPath"

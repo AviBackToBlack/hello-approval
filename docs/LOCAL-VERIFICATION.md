@@ -62,10 +62,11 @@ Verify a commit in the target repository with:
 .\scripts\Test-HelloApprovalLocalVerification.ps1 `
     -Repo C:\path\to\repo `
     -Commit HEAD `
-    -ExpectedPrincipal "principal@example.invalid"
+    -ExpectedPrincipal "principal@example.invalid" `
+    -ExpectedKeyFingerprint "SHA256:<expected-fingerprint>"
 ```
 
-`-ExpectedPrincipal` is optional for ad-hoc inspection, but production/acceptance gates should supply it so the expected principal comes from external operator intent rather than from the trust store being tested.
+`-ExpectedPrincipal` and `-ExpectedKeyFingerprint` are optional for ad-hoc inspection, but production/acceptance gates should supply both so expected principal and key identity come from external operator intent rather than from the trust store/canonical-key files being tested.
 
 The verifier requires all of the following:
 
@@ -75,6 +76,7 @@ The verifier requires all of the following:
 - the trusted public key equals `%USERPROFILE%\.ssh\github-signing.pub`;
 - Git's `%GK` fingerprint equals the SHA-256 fingerprint independently computed from that canonical public key by stock OpenSSH;
 - when `-ExpectedPrincipal` is supplied, the trust-store principal equals that external value;
+- when `-ExpectedKeyFingerprint` is supplied, the canonical public-key fingerprint equals that external value;
 - `git verify-commit <commit>` exits 0;
 - Git `%G?` reports `G`;
 - Git `%GT` reports `fully`;
