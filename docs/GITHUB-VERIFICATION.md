@@ -50,7 +50,7 @@ Therefore neither the GitHub `Verified` badge nor the REST `verified=true` field
 
 ## API permissions
 
-Reading commit verification does not require signing-key administration permission. The HA-1.6 verifier uses the normal [Get a commit REST API](https://docs.github.com/en/rest/commits/commits#get-a-commit) through `gh api` and does not request `admin:ssh_signing_key`.
+Reading commit verification does not require signing-key administration permission. The HA-1.6 verifier uses the normal [Get a commit REST API](https://docs.github.com/en/rest/commits/commits#get-a-commit) through `gh api --hostname github.com` and does not request `admin:ssh_signing_key`. `gh` must be authenticated with enough repository read access for the target repository; public repositories can be read with the ordinary public-resource permissions.
 
 Listing, adding, or deleting SSH signing keys is a different account-management API surface. hello-approval deliberately does not require or request that broader permission for HA-1.6 verification.
 

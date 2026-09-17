@@ -85,7 +85,7 @@ if ($rawText -match '(?m)^gpgsig -----BEGIN PGP SIGNATURE-----$') {
 }
 
 $apiPath = "repos/$Repository/commits/$sha"
-$api = Invoke-NativeCommand -Exe $gh -Arguments @('api', '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', $apiPath) -Context "Read GitHub commit verification for $Repository@$sha"
+$api = Invoke-NativeCommand -Exe $gh -Arguments @('api', '--hostname', 'github.com', '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', $apiPath) -Context "Read GitHub commit verification for $Repository@$sha"
 $jsonText = $api.Output -join "`n"
 try {
     $response = $jsonText | ConvertFrom-Json -ErrorAction Stop
