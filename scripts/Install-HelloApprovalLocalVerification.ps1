@@ -19,9 +19,19 @@ $TrustMarker = "# $Schema"
 
 function Assert-ExactPrincipal {
     param([Parameter(Mandatory = $true)][string]$Value)
-    if ($Value -notmatch '^[A-Za-z0-9][A-Za-z0-9@._+:-]*$') {
+    if ($Value -notmatch '\A[A-Za-z0-9][A-Za-z0-9@._+:-]*\z') {
         throw "Principal must be one exact literal token using letters, digits, @ . _ + : or -; wildcard/pattern/list syntax is not accepted: $Value"
     }
+}
+
+function Test-WindowsPathEqual {
+    param(
+        [Parameter(Mandatory = $true)][string]$Left,
+        [Parameter(Mandatory = $true)][string]$Right
+    )
+    $leftNormalized = $Left -replace '\\','/'
+    $rightNormalized = $Right -replace '\\','/'
+    return [string]::Equals($leftNormalized, $rightNormalized, [StringComparison]::OrdinalIgnoreCase)
 }
 
 function Assert-RegularFile {
@@ -207,13 +217,13 @@ if (Test-Path -LiteralPath $verificationConfig) {
 }
 
 $effectiveValues = @(Get-GitValues -Git $git -Scope global -Key $OwnedKey)
-$conflicts = @($effectiveValues | Where-Object { ($_ -replace '\\','/') -ne $trustFileGit })
+$conflicts = @($effectiveValues | Where-Object { -not (Test-WindowsPathEqual -Left ([string]$_) -Right $trustFileGit) })
 if ($conflicts.Count -gt 0 -and -not $OverrideExistingVerificationConfig) {
     throw "Existing global Git setting '$OwnedKey' conflicts with hello-approval. Re-run with -OverrideExistingVerificationConfig to preserve it but give the hello-approval verification include later precedence. Existing values: $($effectiveValues -join '; ')"
 }
 
 $directIncludes = @(Get-DirectGlobalValues -Git $git -Key 'include.path')
-$ourIncludeCount = @($directIncludes | Where-Object { ($_ -replace '\\','/') -eq $verificationConfigGit }).Count
+$ourIncludeCount = @($directIncludes | Where-Object { Test-WindowsPathEqual -Left ([string]$_) -Right $verificationConfigGit }).Count
 if ($ourIncludeCount -gt 1) { throw "Global Git config contains duplicate hello-approval verification include.path entries: $verificationConfigGit" }
 
 if (-not $PSCmdlet.ShouldProcess($gitRoot, "Install/update hello-approval local verification trust mapping for principal '$Principal'")) { return }
@@ -237,7 +247,7 @@ try {
     $schemaValues = @(Get-GitValues -Git $git -Scope file -File $configStage -Key 'hello-approval.schema')
     $pathValues = @(Get-GitValues -Git $git -Scope file -File $configStage -Key $OwnedKey)
     if ($schemaValues.Count -ne 1 -or $schemaValues[0] -ne $Schema) { throw 'Staged verification config failed schema verification.' }
-    if ($pathValues.Count -ne 1 -or ($pathValues[0] -replace '\\','/') -ne $trustFileGit) { throw 'Staged verification config failed allowedSignersFile verification.' }
+    if ($pathValues.Count -ne 1 -or -not (Test-WindowsPathEqual -Left ([string]$pathValues[0]) -Right $trustFileGit)) { throw 'Staged verification config failed allowedSignersFile verification.' }
 
     Install-StagedFile -Stage $trustStage -Destination $trustFile
     Install-StagedFile -Stage $configStage -Destination $verificationConfig
@@ -247,7 +257,7 @@ try {
     }
 
     $postIncludes = @(Get-DirectGlobalValues -Git $git -Key 'include.path')
-    if (@($postIncludes | Where-Object { ($_ -replace '\\','/') -eq $verificationConfigGit }).Count -ne 1) {
+    if (@($postIncludes | Where-Object { Test-WindowsPathEqual -Left ([string]$_) -Right $verificationConfigGit }).Count -ne 1) {
         throw 'Global Git config does not contain exactly one hello-approval verification include.path after installation.'
     }
 
@@ -257,7 +267,7 @@ try {
     try {
         $env:GIT_CEILING_DIRECTORIES = $verifyRoot
         $probe = Invoke-GitCommand -Git $git -Arguments @('-C', $verifyRoot, 'config', '--global', '--includes', '--get', $OwnedKey) -Context 'Verify context-neutral global allowedSignersFile' -AllowExitOne
-        if ($probe.ExitCode -ne 0 -or $probe.Output.Count -ne 1 -or (($probe.Output[0] -replace '\\','/') -ne $trustFileGit)) {
+        if ($probe.ExitCode -ne 0 -or $probe.Output.Count -ne 1 -or -not (Test-WindowsPathEqual -Left ([string]$probe.Output[0]) -Right $trustFileGit)) {
             throw 'Context-neutral global gpg.ssh.allowedSignersFile is not the hello-approval value after installation. An unconditional later global include may be overriding it.'
         }
     } finally {

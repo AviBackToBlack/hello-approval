@@ -61,8 +61,11 @@ Verify a commit in the target repository with:
 ```powershell
 .\scripts\Test-HelloApprovalLocalVerification.ps1 `
     -Repo C:\path\to\repo `
-    -Commit HEAD
+    -Commit HEAD `
+    -ExpectedPrincipal "principal@example.invalid"
 ```
+
+`-ExpectedPrincipal` is optional for ad-hoc inspection, but production/acceptance gates should supply it so the expected principal comes from external operator intent rather than from the trust store being tested.
 
 The verifier requires all of the following:
 
@@ -70,13 +73,15 @@ The verifier requires all of the following:
 - effective `gpg.ssh.allowedSignersFile` points to the project-owned trust store;
 - the trust store has the expected HA-1.5 marker and exactly one v0.1 signer entry;
 - the trusted public key equals `%USERPROFILE%\.ssh\github-signing.pub`;
+- Git's `%GK` fingerprint equals the SHA-256 fingerprint independently computed from that canonical public key by stock OpenSSH;
+- when `-ExpectedPrincipal` is supplied, the trust-store principal equals that external value;
 - `git verify-commit <commit>` exits 0;
 - Git `%G?` reports `G`;
 - Git `%GT` reports `fully`;
 - Git `%GS` equals the explicit principal from the trust store;
 - Git reports a non-empty signing-key fingerprint.
 
-`git verify-commit` is the authoritative command gate in this slice. Verification forces `gpg.ssh.program` process-locally to the stock Windows OpenSSH `%SystemRoot%\System32\OpenSSH\ssh-keygen.exe`; it does not persistently change Git configuration. This keeps the local verifier independent from the `sshenc` signing broker used to create the signature.
+`git verify-commit` is the authoritative command gate in this slice. Verification forces `gpg.ssh.program` process-locally to stock Windows OpenSSH `ssh-keygen.exe`; on a normal 64-bit PowerShell host this is `%SystemRoot%\System32\OpenSSH\ssh-keygen.exe`, while a 32-bit process on 64-bit Windows uses the `Sysnative` alias to reach the same native system binary. It does not persistently change Git configuration. This keeps the local verifier independent from the `sshenc` signing broker used to create the signature.
 
 ## `git log --show-signature` is evidence, not the exit-code gate
 
