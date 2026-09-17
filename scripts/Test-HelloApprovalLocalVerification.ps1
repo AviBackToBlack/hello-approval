@@ -65,13 +65,54 @@ function Test-WindowsPathEqual {
     return [string]::Equals($leftNormalized, $rightNormalized, [StringComparison]::OrdinalIgnoreCase)
 }
 
-function Get-StockOpenSshVerifierPath {
-    $systemDirectory = if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+function Get-PeMachineBitness {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    $reader = New-Object IO.BinaryReader($stream)
+    try {
+        if ($stream.Length -lt 64) { throw "Executable is too small to contain a PE header: $Path" }
+        $stream.Position = 0x3c
+        $peOffset = $reader.ReadInt32()
+        if ($peOffset -lt 0 -or ($peOffset + 6) -gt $stream.Length) { throw "Executable has an invalid PE header offset: $Path" }
+        $stream.Position = $peOffset
+        if ($reader.ReadUInt32() -ne 0x00004550) { throw "Executable does not contain a PE signature: $Path" }
+        $machine = $reader.ReadUInt16()
+    } finally {
+        $reader.Dispose()
+        $stream.Dispose()
+    }
+
+    switch ($machine) {
+        0x014c { return 32 } # IMAGE_FILE_MACHINE_I386
+        0x01c4 { return 32 } # IMAGE_FILE_MACHINE_ARMNT
+        0x8664 { return 64 } # IMAGE_FILE_MACHINE_AMD64
+        0xaa64 { return 64 } # IMAGE_FILE_MACHINE_ARM64
+        default { throw ("Unsupported PE machine 0x{0:X4} for Git executable: {1}" -f $machine, $Path) }
+    }
+}
+
+function Get-StockOpenSshVerifierPaths {
+    param([Parameter(Mandatory = $true)][string]$GitPath)
+
+    $directSystemDirectory = if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
         Join-Path $env:SystemRoot 'Sysnative'
     } else {
         Join-Path $env:SystemRoot 'System32'
     }
-    return Join-Path $systemDirectory 'OpenSSH\ssh-keygen.exe'
+
+    $gitBitness = Get-PeMachineBitness -Path $GitPath
+    $gitSystemDirectory = if ([Environment]::Is64BitOperatingSystem -and $gitBitness -eq 32) {
+        Join-Path $env:SystemRoot 'Sysnative'
+    } else {
+        Join-Path $env:SystemRoot 'System32'
+    }
+
+    return [pscustomobject]@{
+        Direct = Join-Path $directSystemDirectory 'OpenSSH\ssh-keygen.exe'
+        GitProgram = Join-Path $gitSystemDirectory 'OpenSSH\ssh-keygen.exe'
+        GitBitness = $gitBitness
+    }
 }
 
 function Assert-RegularFile {
@@ -94,8 +135,9 @@ $gitCommand = Get-Command git.exe -CommandType Application -ErrorAction Silently
 if ($null -eq $gitCommand) { $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue }
 if ($null -eq $gitCommand) { throw 'Git was not found in PATH.' }
 $git = $gitCommand.Source
-$systemSshKeygen = Assert-RegularFile -Path (Get-StockOpenSshVerifierPath) -Purpose 'stock Windows OpenSSH verifier'
-$verificationProgram = $systemSshKeygen -replace '\\','/'
+$verifierPaths = Get-StockOpenSshVerifierPaths -GitPath $git
+$systemSshKeygen = Assert-RegularFile -Path $verifierPaths.Direct -Purpose 'stock Windows OpenSSH verifier'
+$verificationProgram = $verifierPaths.GitProgram -replace '\\','/'
 if (-not [string]::IsNullOrEmpty($ExpectedPrincipal)) { Assert-ExactPrincipal -Value $ExpectedPrincipal -Purpose 'ExpectedPrincipal' }
 if (-not [string]::IsNullOrEmpty($ExpectedKeyFingerprint) -and $ExpectedKeyFingerprint -notmatch '\ASHA256:[A-Za-z0-9+/]+={0,2}\z') {
     throw "ExpectedKeyFingerprint must be one exact SHA256 OpenSSH fingerprint, got: $ExpectedKeyFingerprint"
@@ -106,6 +148,7 @@ $isWorkTree = Get-GitOne -Git $git -Arguments @('-C', $repoPath, 'rev-parse', '-
 if ($isWorkTree -ne 'true') { throw "Repository path is not a Git worktree: $repoPath" }
 
 $resolvedCommit = Get-GitOne -Git $git -Arguments @('-C', $repoPath, 'rev-parse', '--verify', '--end-of-options', "$Commit^{commit}") -Context "Resolve commit '$Commit'"
+if ([string]::IsNullOrWhiteSpace($resolvedCommit)) { throw "Could not resolve commit '$Commit'." }
 $format = Get-GitOne -Git $git -Arguments @('-C', $repoPath, 'config', '--includes', '--get', 'gpg.format') -Context 'Read effective gpg.format'
 if ($format -ne 'ssh') { throw "Effective gpg.format is not ssh in target repository: $(if ($null -eq $format) { '<absent>' } else { $format })" }
 
@@ -177,7 +220,8 @@ if (-not [string]::IsNullOrEmpty($ExpectedKeyFingerprint)) { Write-Host "Expecte
 Write-Host "Key fingerprint: $keyFingerprint"
 Write-Host "Trust: $trust"
 Write-Host "Trust store: $allowedPath"
-Write-Host "Verifier: $systemSshKeygen"
+Write-Host "Verifier (direct): $systemSshKeygen"
+Write-Host "Verifier (Git $($verifierPaths.GitBitness)-bit): $($verifierPaths.GitProgram)"
 Write-Host 'Note: the allowed_signers principal is a local trust label for the key; it is not automatically compared with Git author/committer identity.'
 Write-Host '--- git log --show-signature ---'
 $display.Output | ForEach-Object { Write-Host $_ }

@@ -201,6 +201,10 @@ if (Test-Path -LiteralPath $trustFile) {
     if ($existingTrustLines.Count -lt 1 -or $existingTrustLines[0] -cne $TrustMarker) {
         throw "Refusing to replace unowned allowed_signers trust store: $trustFile"
     }
+    $existingSignerEntries = @($existingTrustLines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and -not $_.TrimStart().StartsWith('#') })
+    if ($existingSignerEntries.Count -gt 1) {
+        Write-Warning "Owned hello-approval allowed_signers contains $($existingSignerEntries.Count) signer entries; v0.1 rewrites the file to exactly one project-owned entry."
+    }
 }
 
 if (Test-Path -LiteralPath $verificationConfig) {

@@ -36,7 +36,9 @@ For v0.1, the principal must be one exact literal token. Pattern lists, wildcard
 principal@example.invalid namespaces="git" <key-type> <public-key-blob>
 ```
 
-The key is copied logically from the canonical public key at `%USERPROFILE%\.ssh\github-signing.pub`; no private material is read or created.
+The key is copied logically from the canonical public key at `%USERPROFILE%\.ssh\github-signing.pub`; no private material is read or created. v0.1 intentionally accepts only the hardware-backed OpenSSH security-key type `sk-ecdsa-sha2-nistp256@openssh.com`.
+
+The project-owned `allowed_signers` file is fully regenerated on each installer run and v0.1 owns exactly one signer entry. If extra signer entries are found in an already-owned file, the installer warns before replacing them.
 
 If an existing effective global `gpg.ssh.allowedSignersFile` points somewhere else, installation fails closed. `-OverrideExistingVerificationConfig` preserves the old setting physically and gives the later hello-approval verification include precedence in the context-neutral global baseline. As with HA-1.4, preserved conflicts mean later reruns continue to require the override switch.
 
@@ -83,7 +85,7 @@ The verifier requires all of the following:
 - Git `%GS` equals the explicit principal from the trust store;
 - Git reports a non-empty signing-key fingerprint.
 
-`git verify-commit` is the authoritative command gate in this slice. Verification forces `gpg.ssh.program` process-locally to stock Windows OpenSSH `ssh-keygen.exe`; on a normal 64-bit PowerShell host this is `%SystemRoot%\System32\OpenSSH\ssh-keygen.exe`, while a 32-bit process on 64-bit Windows uses the `Sysnative` alias to reach the same native system binary. It does not persistently change Git configuration. This keeps the local verifier independent from the `sshenc` signing broker used to create the signature.
+`git verify-commit` is the authoritative command gate in this slice. Verification forces `gpg.ssh.program` process-locally to stock Windows OpenSSH `ssh-keygen.exe`. The verifier resolves two spellings when process bitness differs: one path visible to the current PowerShell process for the direct fingerprint probe, and one path visible to the resolved `git.exe`, whose PE machine type is read before invoking Git. On 64-bit Windows, a 32-bit process uses the `Sysnative` alias while a 64-bit process uses `System32`. It does not persistently change Git configuration. This keeps the local verifier independent from the `sshenc` signing broker used to create the signature.
 
 ## `git log --show-signature` is evidence, not the exit-code gate
 
