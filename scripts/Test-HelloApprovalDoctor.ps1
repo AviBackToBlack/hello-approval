@@ -61,6 +61,53 @@ function Get-FileSha256 {
     }
 }
 
+function Test-PinnedRuntimeFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]$Pin,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        Add-Finding -Severity 'BLOCK' -Check "runtime.$Name" -Message 'Pinned runtime file is missing.' -Value $Path
+        return $false
+    }
+
+    try {
+        $item = Get-Item -LiteralPath $Path -Force
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            Add-Finding -Severity 'BLOCK' -Check "runtime.$Name" -Message 'Pinned runtime executable must be a regular non-reparse file.' -Value $Path
+            return $false
+        }
+
+        $record = @($Pin.files | Where-Object { $_.name -ceq $Name -and $_.policy.disposition -eq 'required' })
+        if ($record.Count -ne 1) {
+            Add-Finding -Severity 'BLOCK' -Check "runtime.$Name" -Message 'Provenance pin must contain exactly one required runtime record.' -Value $Name
+            return $false
+        }
+
+        $expectedSize = [int64]$record[0].size_bytes
+        $expectedHash = ([string]$record[0].sha256).ToLowerInvariant()
+        $actualHash = Get-FileSha256 -Path $Path
+        if ($item.Length -ne $expectedSize -or $actualHash -cne $expectedHash) {
+            Add-Finding -Severity 'BLOCK' -Check "runtime.$Name" -Message 'Pinned runtime executable does not match provenance; refusing to execute it.' -Value ([pscustomobject]@{
+                path = $Path
+                expectedSize = $expectedSize
+                actualSize = [int64]$item.Length
+                expectedSha256 = $expectedHash
+                actualSha256 = $actualHash
+            })
+            return $false
+        }
+
+        Add-Finding -Severity 'PASS' -Check "runtime.$Name" -Message 'Pinned runtime executable matches provenance and is safe to invoke for read-only inspection.' -Value $Path
+        return $true
+    } catch {
+        Add-Finding -Severity 'BLOCK' -Check "runtime.$Name" -Message 'Could not validate pinned runtime executable provenance.' -Value $_.Exception.Message
+        return $false
+    }
+}
+
 function Invoke-Native {
     param(
         [Parameter(Mandatory = $true)][string]$Exe,
@@ -363,17 +410,18 @@ try {
     $agentPath = Join-Path $runtimeBin 'sshenc-agent.exe'
 
     $configPath = $null
-    if (Test-Path -LiteralPath $sshencPath -PathType Leaf) {
+    $sshencPinned = Test-PinnedRuntimeFile -Path $sshencPath -Pin $pin -Name 'sshenc.exe'
+    if ($sshencPinned) {
         try {
             $configResult = Invoke-Native -Exe $sshencPath -Arguments @('config','path') -Context 'Resolve authoritative sshenc config path'
             if ($configResult.Output.Count -ne 1) { throw 'sshenc config path did not return exactly one line.' }
             $configPath = [IO.Path]::GetFullPath(([string]$configResult.Output[0]).Trim())
-            Add-Finding -Severity 'PASS' -Check 'sshenc.config.path' -Message 'Authoritative sshenc config path resolved through pinned runtime.' -Value $configPath
+            Add-Finding -Severity 'PASS' -Check 'sshenc.config.path' -Message 'Authoritative sshenc config path resolved through the provenance-validated runtime.' -Value $configPath
         } catch {
             Add-Finding -Severity 'BLOCK' -Check 'sshenc.config.path' -Message 'Could not resolve authoritative sshenc config path.' -Value $_.Exception.Message
         }
     } else {
-        Add-Finding -Severity 'BLOCK' -Check 'runtime.sshenc' -Message 'Pinned sshenc.exe is missing.' -Value $sshencPath
+        Add-Finding -Severity 'BLOCK' -Check 'sshenc.config.path' -Message 'Skipped sshenc execution because the runtime executable did not pass provenance validation.' -Value $sshencPath
     }
 
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -543,7 +591,7 @@ try {
             Add-Finding -Severity 'PASS' -Check 'ssh.config.upstream-managed' -Message 'No upstream sshenc-managed block is present in user SSH config.'
         }
 
-        $identityAgentLines = @($sshConfigText -split '\r?\n' | Where-Object { $_ -match '(?i)^\s*IdentityAgent\s+' })
+        $identityAgentLines = @($sshConfigText -split '\r?\n' | Where-Object { $_ -match '(?i)^\s*IdentityAgent(?:\s*=\s*|\s+)' })
         if ($identityAgentLines.Count -gt 0) {
             $sshencIdentity = @($identityAgentLines | Where-Object { $_ -match '(?i)sshenc' -or $_ -match [regex]::Escape($SocketPath) })
             if ($sshencIdentity.Count -gt 0) {
@@ -576,11 +624,11 @@ try {
                 continue
             }
             try {
-                $schema = Get-GitOne -Git $git -Arguments @('config','--file',$owned.path,'--get','hello-approval.schema') -Context "Read schema from $($owned.path)"
-                if ($schema -ceq $owned.schema) {
-                    Add-Finding -Severity 'PASS' -Check $owned.check -Message 'Owned Git config fragment schema matches.' -Value $owned.path
+                $schemas = @(Get-GitAll -Git $git -Arguments @('config','--file',$owned.path,'--get-all','hello-approval.schema') -Context "Read schema values from $($owned.path)")
+                if ($schemas.Count -eq 1 -and $schemas[0] -ceq $owned.schema) {
+                    Add-Finding -Severity 'PASS' -Check $owned.check -Message 'Owned Git config fragment contains exactly one matching schema value.' -Value $owned.path
                 } else {
-                    Add-Finding -Severity 'BLOCK' -Check $owned.check -Message 'Owned Git config fragment schema is foreign/mismatched.' -Value ([pscustomobject]@{ expected = $owned.schema; actual = $schema; path = $owned.path })
+                    Add-Finding -Severity 'BLOCK' -Check $owned.check -Message 'Owned Git config fragment must contain exactly one matching schema value.' -Value ([pscustomobject]@{ expected = $owned.schema; actual = @($schemas); count = $schemas.Count; path = $owned.path })
                 }
             } catch {
                 Add-Finding -Severity 'BLOCK' -Check $owned.check -Message 'Could not validate owned Git config fragment.' -Value $_.Exception.Message
@@ -603,36 +651,42 @@ try {
         }
 
         $verifyRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
-        $oldCeiling = $env:GIT_CEILING_DIRECTORIES
-        try {
-            $env:GIT_CEILING_DIRECTORIES = $verifyRoot
-            $expectedGlobal = [ordered]@{
-                'gpg.format' = 'ssh'
-                'gpg.ssh.program' = ($sshencPath.Replace('\','/'))
-                'user.signingkey' = ($publicKey.Replace('\','/'))
-                'gpg.ssh.allowedSignersFile' = ($allowedSigners.Replace('\','/'))
+        $verifyRootGitMarker = Join-Path $verifyRoot '.git'
+        if (Test-Path -LiteralPath $verifyRootGitMarker) {
+            Add-Finding -Severity 'BLOCK' -Check 'git.global.probe-root' -Message 'Cannot prove context-neutral global Git values because the read-only probe root itself contains .git.' -Value $verifyRootGitMarker
+        } else {
+            Add-Finding -Severity 'PASS' -Check 'git.global.probe-root' -Message 'Read-only context-neutral Git probe root is not itself a worktree.' -Value $verifyRoot
+            $oldCeiling = $env:GIT_CEILING_DIRECTORIES
+            try {
+                $env:GIT_CEILING_DIRECTORIES = $verifyRoot
+                $expectedGlobal = [ordered]@{
+                    'gpg.format' = 'ssh'
+                    'gpg.ssh.program' = ($sshencPath.Replace([IO.Path]::DirectorySeparatorChar, [char]'/'))
+                    'user.signingkey' = ($publicKey.Replace([IO.Path]::DirectorySeparatorChar, [char]'/'))
+                    'gpg.ssh.allowedSignersFile' = ($allowedSigners.Replace([IO.Path]::DirectorySeparatorChar, [char]'/'))
+                }
+                foreach ($key in $expectedGlobal.Keys) {
+                    $value = Get-GitOne -Git $git -Arguments @('-C',$verifyRoot,'config','--global','--includes','--get',$key) -Context "Read context-neutral global $key" -AllowAbsent
+                    if ($null -eq $value) {
+                        Add-Finding -Severity 'BLOCK' -Check "git.global.$key" -Message 'Required context-neutral global Git value is absent.'
+                        continue
+                    }
+                    $matches = if ($key -eq 'gpg.format') {
+                        $value -ceq $expectedGlobal[$key]
+                    } else {
+                        Test-WindowsPathEqual -Left $value -Right $expectedGlobal[$key]
+                    }
+                    if ($matches) {
+                        Add-Finding -Severity 'PASS' -Check "git.global.$key" -Message 'Context-neutral global Git value matches hello-approval.' -Value $value
+                    } else {
+                        Add-Finding -Severity 'BLOCK' -Check "git.global.$key" -Message 'Context-neutral global Git value is overridden/mismatched.' -Value ([pscustomobject]@{ expected = $expectedGlobal[$key]; actual = $value })
+                    }
+                }
+            } catch {
+                Add-Finding -Severity 'BLOCK' -Check 'git.global' -Message 'Could not validate context-neutral global Git state.' -Value $_.Exception.Message
+            } finally {
+                $env:GIT_CEILING_DIRECTORIES = $oldCeiling
             }
-            foreach ($key in $expectedGlobal.Keys) {
-                $value = Get-GitOne -Git $git -Arguments @('-C',$verifyRoot,'config','--global','--includes','--get',$key) -Context "Read context-neutral global $key" -AllowAbsent
-                if ($null -eq $value) {
-                    Add-Finding -Severity 'BLOCK' -Check "git.global.$key" -Message 'Required context-neutral global Git value is absent.'
-                    continue
-                }
-                $matches = if ($key -eq 'gpg.format') {
-                    $value -ceq $expectedGlobal[$key]
-                } else {
-                    Test-WindowsPathEqual -Left $value -Right $expectedGlobal[$key]
-                }
-                if ($matches) {
-                    Add-Finding -Severity 'PASS' -Check "git.global.$key" -Message 'Context-neutral global Git value matches hello-approval.' -Value $value
-                } else {
-                    Add-Finding -Severity 'BLOCK' -Check "git.global.$key" -Message 'Context-neutral global Git value is overridden/mismatched.' -Value ([pscustomobject]@{ expected = $expectedGlobal[$key]; actual = $value })
-                }
-            }
-        } catch {
-            Add-Finding -Severity 'BLOCK' -Check 'git.global' -Message 'Could not validate context-neutral global Git state.' -Value $_.Exception.Message
-        } finally {
-            $env:GIT_CEILING_DIRECTORIES = $oldCeiling
         }
 
         if (-not [string]::IsNullOrWhiteSpace($Repo)) {
