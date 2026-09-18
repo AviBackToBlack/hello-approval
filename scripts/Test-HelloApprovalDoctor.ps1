@@ -120,13 +120,13 @@ function Invoke-Native {
     $saved = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $LASTEXITCODE = $null
+        $global:LASTEXITCODE = $null
         if ($IncludeStderr) {
             $output = @(& $Exe @Arguments 2>&1 | ForEach-Object { [string]$_ })
         } else {
             $output = @(& $Exe @Arguments 2>$null | ForEach-Object { [string]$_ })
         }
-        $rc = $LASTEXITCODE
+        $rc = $global:LASTEXITCODE
         if ($null -eq $rc) {
             throw "$Context could not launch executable: $Exe"
         }
