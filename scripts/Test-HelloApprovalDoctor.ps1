@@ -508,7 +508,12 @@ try {
             }
         }
     } catch {
-        Add-Finding -Severity 'WARN' -Check 'stock-ssh-agent' -Message 'Could not query stock ssh-agent service state.' -Value $_.Exception.Message
+        $svcFallback = Get-Service -Name 'ssh-agent' -ErrorAction SilentlyContinue
+        if ($null -eq $svcFallback) {
+            Add-Finding -Severity 'INFO' -Check 'stock-ssh-agent' -Message 'Windows OpenSSH Authentication Agent service is not installed or could not be queried through CIM.'
+        } else {
+            Add-Finding -Severity 'INFO' -Check 'stock-ssh-agent' -Message 'Observed stock ssh-agent state through non-CIM fallback; startup mode is unavailable without broader service query access.' -Value ([pscustomobject]@{ state = [string]$svcFallback.Status; name = $svcFallback.Name })
+        }
     }
 
     $sshConfigPath = Join-Path $env:USERPROFILE '.ssh\config'
@@ -543,7 +548,7 @@ try {
         $git = $gitCommand.Source
         Add-Finding -Severity 'PASS' -Check 'git.present' -Message 'Git executable is available.' -Value $git
 
-        if ($null -ne $Repo) {
+        if (-not [string]::IsNullOrWhiteSpace($Repo)) {
             $targetRepo = [IO.Path]::GetFullPath($Repo)
             Test-RepoEffectiveGit -Git $git -RepoPath $targetRepo -ExpectedSshenc $sshencPath -ExpectedPublicKey $publicKey -ExpectedAllowedSigners $allowedSigners
         } else {
@@ -575,7 +580,7 @@ if ($Json) {
     [pscustomobject]@{
         schema = 'hello-approval/doctor/v1'
         healthy = -not $blocked
-        findings = @($findings)
+        findings = $findings.ToArray()
     } | ConvertTo-Json -Depth 8
 } else {
     foreach ($finding in $findings) {
