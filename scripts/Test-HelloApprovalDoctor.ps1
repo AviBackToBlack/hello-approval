@@ -372,7 +372,8 @@ function Test-RepoEffectiveGit {
         }
 
         foreach ($transportKey in @('core.sshCommand','core.sshVariant')) {
-            $values = @(Get-GitAll -Git $Git -Arguments @('-C',$RepoPath,'config','--includes','--get-all',$transportKey) -Context "Read effective target Git transport value $transportKey")
+            $value = Get-GitOne -Git $Git -Arguments @('-C',$RepoPath,'config','--includes','--get',$transportKey) -Context "Read effective target Git transport value $transportKey" -AllowAbsent
+            $values = if ($null -eq $value) { @() } else { @($value) }
             Add-GitTransportFinding -Check "git.target.$transportKey" -Key $transportKey -Values $values
         }
     } catch {
