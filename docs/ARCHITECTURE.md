@@ -164,6 +164,8 @@ user.signingkey = <path-to-public-key>
 
 Local verification additionally uses a project-owned `allowed_signers` trust store plus a separate verification config fragment. The v0.1 trust entry is restricted to the SSH signature namespace `git`. Its principal is an explicit local trust-policy label for the key; Git does not automatically bind that principal to commit author/committer identity. See [Local Git signature verification](LOCAL-VERIFICATION.md).
 
+GitHub verification is a separate verifier plane. HA-1.6 binds the hosting-platform result to the exact SHA of a commit whose local object already carries an SSH signature, rather than treating a `Verified` badge as evidence of the Windows Hello-backed local signing path. See [GitHub verification](GITHUB-VERIFICATION.md).
+
 The reference implementation does not configure ordinary SSH transport credentials.
 
 ## 10. Automation boundary
