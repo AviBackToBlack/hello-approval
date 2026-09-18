@@ -117,7 +117,9 @@ function Get-GlobalWritePath {
     $result = Invoke-Git -Git $Git -Arguments @('var','GIT_CONFIG_GLOBAL') -Context 'Resolve Git global configuration candidates'
     $candidates = @($result.Output | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
     if ($candidates.Count -lt 1) { throw 'Git did not report a global configuration path.' }
-    return [IO.Path]::GetFullPath(($candidates[$candidates.Count - 1] -replace '/', '\'))
+    $path = $candidates[$candidates.Count - 1].Replace([char]'/', [IO.Path]::DirectorySeparatorChar)
+    if (-not [IO.Path]::IsPathRooted($path)) { throw "Git global write path is not absolute: $path" }
+    return [IO.Path]::GetFullPath($path)
 }
 
 function Get-FileSnapshot {
@@ -419,18 +421,22 @@ foreach ($quarantine in @($runtimeQuarantine, $launcherQuarantine)) {
         }
     }
 }
-if (-not $WhatIfPreference -and $RemoveRuntime) {
+if ($RemoveRuntime) {
     $runtimeParent = Split-Path -Parent $runtimeRoot
     if (Test-Path -LiteralPath $runtimeParent -PathType Container) {
         $remaining = @(Get-ChildItem -LiteralPath $runtimeParent -Force -ErrorAction SilentlyContinue)
-        if ($remaining.Count -eq 0) { Remove-Item -LiteralPath $runtimeParent -Force -ErrorAction SilentlyContinue }
+        if ($remaining.Count -eq 0 -and $PSCmdlet.ShouldProcess($runtimeParent, 'Remove empty hello-approval runtime parent')) {
+            Remove-Item -LiteralPath $runtimeParent -Force
+        }
     }
 }
-if (-not $WhatIfPreference -and $RemoveLauncherCache) {
+if ($RemoveLauncherCache) {
     $appRoot = Split-Path -Parent $launcherRoot
     if (Test-Path -LiteralPath $appRoot -PathType Container) {
         $remaining = @(Get-ChildItem -LiteralPath $appRoot -Force -ErrorAction SilentlyContinue)
-        if ($remaining.Count -eq 0) { Remove-Item -LiteralPath $appRoot -Force -ErrorAction SilentlyContinue }
+        if ($remaining.Count -eq 0 -and $PSCmdlet.ShouldProcess($appRoot, 'Remove empty hello-approval app parent')) {
+            Remove-Item -LiteralPath $appRoot -Force
+        }
     }
 }
 

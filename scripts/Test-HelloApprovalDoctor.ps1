@@ -120,12 +120,16 @@ function Invoke-Native {
     $saved = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
+        $LASTEXITCODE = $null
         if ($IncludeStderr) {
             $output = @(& $Exe @Arguments 2>&1 | ForEach-Object { [string]$_ })
         } else {
             $output = @(& $Exe @Arguments 2>$null | ForEach-Object { [string]$_ })
         }
         $rc = $LASTEXITCODE
+        if ($null -eq $rc) {
+            throw "$Context could not launch executable: $Exe"
+        }
     } finally {
         $ErrorActionPreference = $saved
     }
@@ -306,6 +310,29 @@ function Get-GitAll {
     return @($result.Output)
 }
 
+function Add-GitTransportFinding {
+    param(
+        [Parameter(Mandatory = $true)][string]$Check,
+        [Parameter(Mandatory = $true)][string]$Key,
+        [Parameter(Mandatory = $true)][object[]]$Values
+    )
+
+    $clean = @($Values | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($clean.Count -eq 0) {
+        Add-Finding -Severity 'PASS' -Check $Check -Message "$Key is absent."
+        return
+    }
+
+    $prohibited = @($clean | Where-Object {
+        $_ -match '(?i)sshenc' -or $_ -match [regex]::Escape($SocketPath)
+    })
+    if ($prohibited.Count -gt 0) {
+        Add-Finding -Severity 'BLOCK' -Check $Check -Message "$Key points at sshenc or the dedicated signing pipe, which violates transport isolation." -Value $clean
+    } else {
+        Add-Finding -Severity 'WARN' -Check $Check -Message "$Key is configured to unrelated user/system state; hello-approval does not own or modify it." -Value $clean
+    }
+}
+
 function Test-RepoEffectiveGit {
     param(
         [Parameter(Mandatory = $true)][string]$Git,
@@ -343,6 +370,11 @@ function Test-RepoEffectiveGit {
                 Add-Finding -Severity 'BLOCK' -Check "git.target.$key" -Message 'Effective target repository value overrides/mismatches hello-approval.' -Value ([pscustomobject]@{ expected = $expected[$key]; actual = $value; repo = $RepoPath })
             }
         }
+
+        foreach ($transportKey in @('core.sshCommand','core.sshVariant')) {
+            $values = @(Get-GitAll -Git $Git -Arguments @('-C',$RepoPath,'config','--includes','--get-all',$transportKey) -Context "Read effective target Git transport value $transportKey")
+            Add-GitTransportFinding -Check "git.target.$transportKey" -Key $transportKey -Values $values
+        }
     } catch {
         Add-Finding -Severity 'BLOCK' -Check 'git.target' -Message 'Could not validate effective Git state in target repository.' -Value $_.Exception.Message
     }
@@ -354,7 +386,7 @@ try {
         throw 'unsupported-platform'
     }
 
-    foreach ($required in @('LOCALAPPDATA','USERPROFILE','APPDATA','SystemRoot')) {
+    foreach ($required in @('LOCALAPPDATA','USERPROFILE','SystemRoot')) {
         $value = [Environment]::GetEnvironmentVariable($required, 'Process')
         if ([string]::IsNullOrWhiteSpace($value)) {
             Add-Finding -Severity 'BLOCK' -Check "environment.$required" -Message 'Required Windows environment path is unavailable.'
@@ -432,6 +464,35 @@ try {
     $launcherHash = if (Test-Path -LiteralPath $sourceLauncher -PathType Leaf) { Get-FileSha256 -Path $sourceLauncher } else { $null }
     $launcherVersionRoot = if ($null -ne $launcherHash) { Join-Path $projectRoot ("app\launcher\{0}" -f $launcherHash) } else { $null }
     $installedLauncher = if ($null -ne $launcherVersionRoot) { Join-Path $launcherVersionRoot 'Start-HelloApprovalAgent.ps1' } else { $null }
+    $launcherSurfaceValid = $false
+
+    if ($null -eq $launcherHash -or $null -eq $launcherVersionRoot -or $null -eq $installedLauncher) {
+        Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Cannot derive the content-addressed launcher path from the trusted source launcher.'
+    } elseif (-not (Test-Path -LiteralPath $launcherVersionRoot -PathType Container)) {
+        Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Installed content-addressed launcher digest directory is missing.' -Value $launcherVersionRoot
+    } else {
+        try {
+            $launcherRootItem = Get-Item -LiteralPath $launcherVersionRoot -Force
+            $launcherItems = @(Get-ChildItem -LiteralPath $launcherVersionRoot -Force)
+            if (($launcherRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+                $launcherItems.Count -ne 1 -or
+                $launcherItems[0].Name -cne 'Start-HelloApprovalAgent.ps1' -or
+                $launcherItems[0].PSIsContainer -or
+                ($launcherItems[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Installed content-addressed launcher surface is not exact.' -Value $launcherVersionRoot
+            } else {
+                $installedLauncherHash = Get-FileSha256 -Path $installedLauncher
+                if ($installedLauncherHash -cne $launcherHash) {
+                    Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Installed launcher bytes do not match the digest directory/source launcher.' -Value ([pscustomobject]@{ expected = $launcherHash; actual = $installedLauncherHash; path = $installedLauncher })
+                } else {
+                    $launcherSurfaceValid = $true
+                    Add-Finding -Severity 'PASS' -Check 'launcher.cache' -Message 'Installed content-addressed launcher surface exists and matches the trusted source digest.' -Value $installedLauncher
+                }
+            }
+        } catch {
+            Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Could not validate installed content-addressed launcher surface.' -Value $_.Exception.Message
+        }
+    }
 
     $task = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
     $taskOwned = $false
@@ -449,8 +510,8 @@ try {
                 $taskOwned = $true
                 Add-Finding -Severity 'PASS' -Check 'task.ownership' -Message 'Scheduled Task ownership marker matches.' -Value $TaskMarker
 
-                if ($null -eq $configPath -or $null -eq $installedLauncher -or -not (Test-Path -LiteralPath $agentPath -PathType Leaf)) {
-                    Add-Finding -Severity 'BLOCK' -Check 'task.definition' -Message 'Cannot derive exact desired task definition because required installed paths are missing.'
+                if ($null -eq $configPath -or -not $launcherSurfaceValid -or -not (Test-Path -LiteralPath $agentPath -PathType Leaf)) {
+                    Add-Finding -Severity 'BLOCK' -Check 'task.definition' -Message 'Cannot validate exact desired task definition because required installed paths/surfaces are missing or invalid.'
                 } else {
                     $actionArguments = @(
                         '-NoProfile',
@@ -484,7 +545,9 @@ try {
     }
 
     if ($null -ne $task) {
-        if ($task.State -eq 'Running' -and $pipePresent) {
+        if (-not $taskOwned) {
+            Add-Finding -Severity 'BLOCK' -Check 'task.runtime' -Message 'Cannot attribute runtime health to hello-approval because the same-name Scheduled Task is foreign.' -Value $task.State
+        } elseif ($task.State -eq 'Running' -and $pipePresent) {
             Add-Finding -Severity 'PASS' -Check 'task.runtime' -Message 'Owned task is Running and the dedicated pipe is present.'
         } elseif ($task.State -eq 'Running' -and -not $pipePresent) {
             Add-Finding -Severity 'BLOCK' -Check 'task.runtime' -Message 'Task reports Running but the dedicated pipe is absent.'
@@ -544,7 +607,7 @@ try {
             Add-Finding -Severity 'PASS' -Check "environment.$target.SSHENC_AGENT_SOCKET" -Message 'No SSHENC_AGENT_SOCKET override is present.'
         }
 
-        foreach ($name in @('SSH_AUTH_SOCK','GIT_SSH_COMMAND')) {
+        foreach ($name in @('SSH_AUTH_SOCK','GIT_SSH','GIT_SSH_COMMAND')) {
             $value = [Environment]::GetEnvironmentVariable($name, $target)
             if ([string]::IsNullOrWhiteSpace($value)) {
                 Add-Finding -Severity 'PASS' -Check "environment.$target.$name" -Message "$name is absent."
@@ -556,6 +619,24 @@ try {
                 Add-Finding -Severity 'BLOCK' -Check "environment.$target.$name" -Message 'Persistent/process SSH integration points at sshenc or the dedicated signing pipe, which violates transport isolation.' -Value $value
             } else {
                 Add-Finding -Severity 'WARN' -Check "environment.$target.$name" -Message "$name is set to unrelated user state; hello-approval does not own or modify it." -Value $value
+            }
+        }
+    }
+
+    $gitCommand = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue
+    if ($null -eq $gitCommand) { $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue }
+    if ($null -ne $gitCommand) {
+        $git = $gitCommand.Source
+        foreach ($scope in @('system','global')) {
+            foreach ($transportKey in @('core.sshCommand','core.sshVariant')) {
+                try {
+                    $values = @(Get-GitAll -Git $git -Arguments @('config',"--$scope",'--includes','--get-all',$transportKey) -Context "Read $scope Git transport value $transportKey")
+                    Add-GitTransportFinding -Check "git.$scope.$transportKey" -Key $transportKey -Values $values
+                    $blockedTransport = @($values | Where-Object { $_ -match '(?i)sshenc' -or $_ -match [regex]::Escape($SocketPath) })
+                    if ($blockedTransport.Count -gt 0) { $takeoverFingerprint = $true }
+                } catch {
+                    Add-Finding -Severity 'BLOCK' -Check "git.$scope.$transportKey" -Message "Could not inspect $scope Git transport setting." -Value $_.Exception.Message
+                }
             }
         }
     }
@@ -615,8 +696,6 @@ try {
     } else {
         Add-Finding -Severity 'INFO' -Check 'ssh.config' -Message 'User SSH config does not exist.' -Value $sshConfigPath
     }
-    $gitCommand = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue
-    if ($null -eq $gitCommand) { $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue }
     if ($null -eq $gitCommand) {
         Add-Finding -Severity 'BLOCK' -Check 'git.present' -Message 'Git executable is not available.'
     } else {
