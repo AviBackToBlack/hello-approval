@@ -602,8 +602,7 @@ try {
             Add-Finding -Severity 'BLOCK' -Check 'git.include' -Message 'Could not inspect direct global include.path values.' -Value $_.Exception.Message
         }
 
-        $verifyRoot = Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-doctor-git-{0}' -f [Guid]::NewGuid().ToString('N'))
-        [void][IO.Directory]::CreateDirectory($verifyRoot)
+        $verifyRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
         $oldCeiling = $env:GIT_CEILING_DIRECTORIES
         try {
             $env:GIT_CEILING_DIRECTORIES = $verifyRoot
@@ -634,7 +633,6 @@ try {
             Add-Finding -Severity 'BLOCK' -Check 'git.global' -Message 'Could not validate context-neutral global Git state.' -Value $_.Exception.Message
         } finally {
             $env:GIT_CEILING_DIRECTORIES = $oldCeiling
-            Remove-Item -LiteralPath $verifyRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
 
         if (-not [string]::IsNullOrWhiteSpace($Repo)) {
