@@ -312,6 +312,8 @@ $ownedIncludeValues = @($directIncludes | Where-Object {
 
 $gitMutationStarted = $false
 $taskRemoved = $false
+$runtimeQuarantine = $null
+$launcherQuarantine = $null
 try {
     if ($PSCmdlet.ShouldProcess("$TaskPath$TaskName", 'Stop and remove owned hello-approval Scheduled Task')) {
         if ($null -ne $task) {
@@ -359,13 +361,10 @@ try {
 
     if ($RemoveRuntime -and $PSCmdlet.ShouldProcess($runtimeRoot, 'Remove exact pinned hello-approval runtime')) {
         if (Test-Path -LiteralPath $runtimeRoot) {
-            Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
             $runtimeParent = Split-Path -Parent $runtimeRoot
-            if (Test-Path -LiteralPath $runtimeParent -PathType Container) {
-                $remaining = @(Get-ChildItem -LiteralPath $runtimeParent -Force -ErrorAction SilentlyContinue)
-                if ($remaining.Count -eq 0) { Remove-Item -LiteralPath $runtimeParent -Force }
-            }
-            Write-Host "Exact pinned runtime removed: $runtimeRoot"
+            $runtimeQuarantine = Join-Path $runtimeParent ('.{0}.removing.{1}' -f (Split-Path -Leaf $runtimeRoot), [Guid]::NewGuid().ToString('N'))
+            [IO.Directory]::Move($runtimeRoot, $runtimeQuarantine)
+            Write-Host "Exact pinned runtime staged for removal: $runtimeRoot"
         } else {
             Write-Host 'Pinned runtime is already absent.'
         }
@@ -373,13 +372,10 @@ try {
 
     if ($RemoveLauncherCache -and $PSCmdlet.ShouldProcess($launcherRoot, 'Remove verified hello-approval content-addressed launcher cache')) {
         if (Test-Path -LiteralPath $launcherRoot) {
-            Remove-Item -LiteralPath $launcherRoot -Recurse -Force
             $appRoot = Split-Path -Parent $launcherRoot
-            if (Test-Path -LiteralPath $appRoot -PathType Container) {
-                $remaining = @(Get-ChildItem -LiteralPath $appRoot -Force -ErrorAction SilentlyContinue)
-                if ($remaining.Count -eq 0) { Remove-Item -LiteralPath $appRoot -Force }
-            }
-            Write-Host "Verified launcher cache removed: $launcherRoot"
+            $launcherQuarantine = Join-Path $appRoot ('.launcher.removing.{0}' -f [Guid]::NewGuid().ToString('N'))
+            [IO.Directory]::Move($launcherRoot, $launcherQuarantine)
+            Write-Host "Verified launcher cache staged for removal: $launcherRoot"
         } else {
             Write-Host 'Launcher cache is already absent.'
         }
@@ -392,6 +388,12 @@ try {
         try { Restore-FileSnapshot -Snapshot $verificationSnapshot } catch { Write-Warning "Failed to restore verification fragment snapshot: $($_.Exception.Message)" }
         try { Restore-FileSnapshot -Snapshot $trustSnapshot } catch { Write-Warning "Failed to restore allowed_signers snapshot: $($_.Exception.Message)" }
     }
+    if ($null -ne $runtimeQuarantine -and (Test-Path -LiteralPath $runtimeQuarantine) -and -not (Test-Path -LiteralPath $runtimeRoot)) {
+        try { [IO.Directory]::Move($runtimeQuarantine, $runtimeRoot) } catch { Write-Warning "Failed to restore runtime quarantine after cleanup failure: $($_.Exception.Message)" }
+    }
+    if ($null -ne $launcherQuarantine -and (Test-Path -LiteralPath $launcherQuarantine) -and -not (Test-Path -LiteralPath $launcherRoot)) {
+        try { [IO.Directory]::Move($launcherQuarantine, $launcherRoot) } catch { Write-Warning "Failed to restore launcher-cache quarantine after cleanup failure: $($_.Exception.Message)" }
+    }
     if ($taskRemoved -and $null -ne $taskXmlText) {
         try {
             Register-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Xml $taskXmlText -Force | Out-Null
@@ -403,6 +405,33 @@ try {
         }
     }
     throw $original
+}
+
+# Destructive directory bytes are deleted only after all rollback-capable steps
+# have succeeded. A failure to reclaim quarantine storage is reported as a
+# warning; the active integration path is already removed as requested.
+foreach ($quarantine in @($runtimeQuarantine, $launcherQuarantine)) {
+    if ($null -ne $quarantine -and (Test-Path -LiteralPath $quarantine)) {
+        try {
+            Remove-Item -LiteralPath $quarantine -Recurse -Force
+        } catch {
+            Write-Warning "Cleanup completed but quarantine storage could not be fully removed: $quarantine | $($_.Exception.Message)"
+        }
+    }
+}
+if ($RemoveRuntime) {
+    $runtimeParent = Split-Path -Parent $runtimeRoot
+    if (Test-Path -LiteralPath $runtimeParent -PathType Container) {
+        $remaining = @(Get-ChildItem -LiteralPath $runtimeParent -Force -ErrorAction SilentlyContinue)
+        if ($remaining.Count -eq 0) { Remove-Item -LiteralPath $runtimeParent -Force -ErrorAction SilentlyContinue }
+    }
+}
+if ($RemoveLauncherCache) {
+    $appRoot = Split-Path -Parent $launcherRoot
+    if (Test-Path -LiteralPath $appRoot -PathType Container) {
+        $remaining = @(Get-ChildItem -LiteralPath $appRoot -Force -ErrorAction SilentlyContinue)
+        if ($remaining.Count -eq 0) { Remove-Item -LiteralPath $appRoot -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 Write-Host ''
