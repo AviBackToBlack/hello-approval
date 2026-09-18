@@ -608,9 +608,9 @@ try {
             $env:GIT_CEILING_DIRECTORIES = $verifyRoot
             $expectedGlobal = [ordered]@{
                 'gpg.format' = 'ssh'
-                'gpg.ssh.program' = ($sshencPath -replace '\','/')
-                'user.signingkey' = ($publicKey -replace '\','/')
-                'gpg.ssh.allowedSignersFile' = ($allowedSigners -replace '\','/')
+                'gpg.ssh.program' = ($sshencPath.Replace('\','/'))
+                'user.signingkey' = ($publicKey.Replace('\','/'))
+                'gpg.ssh.allowedSignersFile' = ($allowedSigners.Replace('\','/'))
             }
             foreach ($key in $expectedGlobal.Keys) {
                 $value = Get-GitOne -Git $git -Arguments @('-C',$verifyRoot,'config','--global','--includes','--get',$key) -Context "Read context-neutral global $key" -AllowAbsent
