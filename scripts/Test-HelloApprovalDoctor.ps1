@@ -246,6 +246,19 @@ function Get-GitOne {
     return [string]$result.Output[0]
 }
 
+function Get-GitAll {
+    param(
+        [Parameter(Mandatory = $true)][string]$Git,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $result = Invoke-Native -Exe $Git -Arguments $Arguments -Context $Context -AllowExitOne
+    if ($result.ExitCode -eq 1) { return @() }
+    if ($result.ExitCode -ne 0) { throw "$Context returned exit $($result.ExitCode)." }
+    return @($result.Output)
+}
+
 function Test-RepoEffectiveGit {
     param(
         [Parameter(Mandatory = $true)][string]$Git,
@@ -317,6 +330,11 @@ try {
     $principal = $null
     if (Test-Path -LiteralPath $allowedSigners -PathType Leaf) {
         $lines = @(Get-Content -LiteralPath $allowedSigners)
+        if ($lines.Count -lt 1 -or $lines[0] -cne ("# {0}" -f $VerificationSchema)) {
+            Add-Finding -Severity 'BLOCK' -Check 'trust.ownership' -Message 'Project allowed_signers marker is missing or foreign.' -Value $allowedSigners
+        } else {
+            Add-Finding -Severity 'PASS' -Check 'trust.ownership' -Message 'Project allowed_signers ownership marker matches.' -Value $VerificationSchema
+        }
         $entries = @($lines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and -not $_.TrimStart().StartsWith('#') })
         if ($entries.Count -eq 1 -and $entries[0] -match '\A(?<principal>[A-Za-z0-9][A-Za-z0-9@._+:-]*) namespaces="git" (?<type>\S+) (?<blob>[A-Za-z0-9+/]+={0,2})\z') {
             $principal = [string]$Matches.principal
@@ -547,6 +565,77 @@ try {
     } else {
         $git = $gitCommand.Source
         Add-Finding -Severity 'PASS' -Check 'git.present' -Message 'Git executable is available.' -Value $git
+
+        $ownedGitFiles = @(
+            [pscustomobject]@{ path = $signingConfig; schema = $SigningSchema; check = 'git.signing-fragment' },
+            [pscustomobject]@{ path = $verificationConfig; schema = $VerificationSchema; check = 'git.verification-fragment' }
+        )
+        foreach ($owned in $ownedGitFiles) {
+            if (-not (Test-Path -LiteralPath $owned.path -PathType Leaf)) {
+                Add-Finding -Severity 'BLOCK' -Check $owned.check -Message 'Owned Git config fragment is missing.' -Value $owned.path
+                continue
+            }
+            try {
+                $schema = Get-GitOne -Git $git -Arguments @('config','--file',$owned.path,'--get','hello-approval.schema') -Context "Read schema from $($owned.path)"
+                if ($schema -ceq $owned.schema) {
+                    Add-Finding -Severity 'PASS' -Check $owned.check -Message 'Owned Git config fragment schema matches.' -Value $owned.path
+                } else {
+                    Add-Finding -Severity 'BLOCK' -Check $owned.check -Message 'Owned Git config fragment schema is foreign/mismatched.' -Value ([pscustomobject]@{ expected = $owned.schema; actual = $schema; path = $owned.path })
+                }
+            } catch {
+                Add-Finding -Severity 'BLOCK' -Check $owned.check -Message 'Could not validate owned Git config fragment.' -Value $_.Exception.Message
+            }
+        }
+
+        try {
+            $directIncludes = @(Get-GitAll -Git $git -Arguments @('config','--global','--get-all','include.path') -Context 'Read direct global include.path')
+            foreach ($ownedPath in @($signingConfig,$verificationConfig)) {
+                $count = @($directIncludes | Where-Object { Test-WindowsPathEqual -Left ([string]$_) -Right $ownedPath }).Count
+                $checkName = if (Test-WindowsPathEqual -Left $ownedPath -Right $signingConfig) { 'git.include.signing' } else { 'git.include.verification' }
+                if ($count -eq 1) {
+                    Add-Finding -Severity 'PASS' -Check $checkName -Message 'Direct global config contains exactly one owned include.path.' -Value $ownedPath
+                } else {
+                    Add-Finding -Severity 'BLOCK' -Check $checkName -Message 'Direct global config must contain exactly one owned include.path.' -Value ([pscustomobject]@{ path = $ownedPath; count = $count })
+                }
+            }
+        } catch {
+            Add-Finding -Severity 'BLOCK' -Check 'git.include' -Message 'Could not inspect direct global include.path values.' -Value $_.Exception.Message
+        }
+
+        $verifyRoot = Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-doctor-git-{0}' -f [Guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory($verifyRoot)
+        $oldCeiling = $env:GIT_CEILING_DIRECTORIES
+        try {
+            $env:GIT_CEILING_DIRECTORIES = $verifyRoot
+            $expectedGlobal = [ordered]@{
+                'gpg.format' = 'ssh'
+                'gpg.ssh.program' = ($sshencPath -replace '\','/')
+                'user.signingkey' = ($publicKey -replace '\','/')
+                'gpg.ssh.allowedSignersFile' = ($allowedSigners -replace '\','/')
+            }
+            foreach ($key in $expectedGlobal.Keys) {
+                $value = Get-GitOne -Git $git -Arguments @('-C',$verifyRoot,'config','--global','--includes','--get',$key) -Context "Read context-neutral global $key" -AllowAbsent
+                if ($null -eq $value) {
+                    Add-Finding -Severity 'BLOCK' -Check "git.global.$key" -Message 'Required context-neutral global Git value is absent.'
+                    continue
+                }
+                $matches = if ($key -eq 'gpg.format') {
+                    $value -ceq $expectedGlobal[$key]
+                } else {
+                    Test-WindowsPathEqual -Left $value -Right $expectedGlobal[$key]
+                }
+                if ($matches) {
+                    Add-Finding -Severity 'PASS' -Check "git.global.$key" -Message 'Context-neutral global Git value matches hello-approval.' -Value $value
+                } else {
+                    Add-Finding -Severity 'BLOCK' -Check "git.global.$key" -Message 'Context-neutral global Git value is overridden/mismatched.' -Value ([pscustomobject]@{ expected = $expectedGlobal[$key]; actual = $value })
+                }
+            }
+        } catch {
+            Add-Finding -Severity 'BLOCK' -Check 'git.global' -Message 'Could not validate context-neutral global Git state.' -Value $_.Exception.Message
+        } finally {
+            $env:GIT_CEILING_DIRECTORIES = $oldCeiling
+            Remove-Item -LiteralPath $verifyRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
 
         if (-not [string]::IsNullOrWhiteSpace($Repo)) {
             $targetRepo = [IO.Path]::GetFullPath($Repo)
