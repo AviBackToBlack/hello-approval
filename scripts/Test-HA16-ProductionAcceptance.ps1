@@ -5,6 +5,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Repository,
     [Parameter(Mandatory = $true)][string]$ExpectedPrincipal,
     [Parameter(Mandatory = $true)][string]$ExpectedKeyFingerprint,
+    [Parameter(Mandatory = $true)][string]$AuthorName,
+    [Parameter(Mandatory = $true)][string]$AuthorEmail,
     [switch]$DevelopmentSkipPushProbe
 )
 
@@ -53,6 +55,8 @@ if (-not [Environment]::Is64BitProcess) { throw 'Run HA-1.6 production acceptanc
 if ($Repository -notmatch '\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z') { throw "Invalid GitHub repository: $Repository" }
 if ($ExpectedPrincipal -notmatch '\A[A-Za-z0-9][A-Za-z0-9@._+:-]*\z') { throw "Invalid expected principal: $ExpectedPrincipal" }
 if ($ExpectedKeyFingerprint -notmatch '\ASHA256:[A-Za-z0-9+/]+={0,2}\z') { throw "Invalid expected key fingerprint: $ExpectedKeyFingerprint" }
+if ([string]::IsNullOrWhiteSpace($AuthorName) -or $AuthorName -match '[\r\n]') { throw 'AuthorName must be one non-empty line.' }
+if ($AuthorEmail -notmatch '\A[^<>\s@]+@[^<>\s@]+\z') { throw "AuthorEmail must be one exact email token, got: $AuthorEmail" }
 
 $gitCommand = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue
 if ($null -eq $gitCommand) { $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue }
@@ -84,6 +88,7 @@ Write-Host "reviewed HA-1.6:      $ExpectedHead"
 Write-Host "repository:           $Repository"
 Write-Host "expected principal:   $ExpectedPrincipal"
 Write-Host "expected fingerprint: $ExpectedKeyFingerprint"
+Write-Host "acceptance author:     $AuthorName <$AuthorEmail>"
 Write-Host "local verifier:       $stockSshKeygen"
 
 if ($DevelopmentSkipPushProbe) {
@@ -100,8 +105,15 @@ try {
     [void](Invoke-Native -Exe $gh -Arguments @('repo','clone',$Repository,$probeRoot,'--','--no-checkout') -Context 'Clone acceptance repository' -IncludeStderr)
     [void](Invoke-Native -Exe $git -Arguments @('-C',$probeRoot,'checkout','--detach',$ExpectedHead) -Context 'Checkout exact HA-1.6 product HEAD')
 
-    $authorRaw = Get-One -Exe $git -Arguments @('-C',$probeRoot,'var','GIT_AUTHOR_IDENT') -Context 'Read production author identity'
-    $committerRaw = Get-One -Exe $git -Arguments @('-C',$probeRoot,'var','GIT_COMMITTER_IDENT') -Context 'Read production committer identity'
+    # The real workstation intentionally has no global author identity. Set
+    # identity only in this disposable clone; never infer it from signing policy.
+    [void](Invoke-Native -Exe $git -Arguments @('-C',$probeRoot,'config','--local','user.name',$AuthorName) -Context 'Set acceptance author name')
+    [void](Invoke-Native -Exe $git -Arguments @('-C',$probeRoot,'config','--local','user.email',$AuthorEmail) -Context 'Set acceptance author email')
+
+    $authorRaw = Get-One -Exe $git -Arguments @('-C',$probeRoot,'var','GIT_AUTHOR_IDENT') -Context 'Read acceptance author identity'
+    $committerRaw = Get-One -Exe $git -Arguments @('-C',$probeRoot,'var','GIT_COMMITTER_IDENT') -Context 'Read acceptance committer identity'
+    if ($authorRaw -notmatch ('\A' + [regex]::Escape($AuthorName) + ' <' + [regex]::Escape($AuthorEmail) + '> ')) { throw "Acceptance author identity does not match explicit input: $authorRaw" }
+    if ($committerRaw -notmatch ('\A' + [regex]::Escape($AuthorName) + ' <' + [regex]::Escape($AuthorEmail) + '> ')) { throw "Acceptance committer identity does not match explicit input: $committerRaw" }
     Write-Host "author:    $authorRaw"
     Write-Host "committer: $committerRaw"
 
