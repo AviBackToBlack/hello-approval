@@ -52,6 +52,7 @@ It checks:
 - prohibited `SSHENC_AGENT_SOCKET` overrides;
 - `SSH_AUTH_SOCK` / `GIT_SSH_COMMAND` takeover fingerprints that point normal SSH transport at sshenc or the dedicated signing pipe;
 - upstream sshenc-managed SSH config blocks and `IdentityAgent` coupling;
+- SSH `Include` directives are not recursively expanded in v0.1; when present, checks that would otherwise claim the absence of an upstream sshenc-managed block or prohibited `IdentityAgent` fail closed with `BLOCK`;
 - current stock Windows `ssh-agent` state without modifying it;
 - canonical hardware-backed public-key shape;
 - optional target-repository effective Git signing/trust values.
