@@ -585,27 +585,36 @@ try {
     $sshConfigPath = Join-Path $env:USERPROFILE '.ssh\config'
     if (Test-Path -LiteralPath $sshConfigPath -PathType Leaf) {
         $sshConfigText = Get-Content -LiteralPath $sshConfigPath -Raw
+        $sshConfigLines = @($sshConfigText -split '\r?\n')
+        $includeLines = @($sshConfigLines | Where-Object { $_ -match '(?i)^\s*Include(?:\s*=\s*|\s+)' })
+        $hasIncludes = $includeLines.Count -gt 0
+
         if ($sshConfigText -match '(?im)(sshenc-managed|BEGIN\s+sshenc\s+managed\s+block)') {
             Add-Finding -Severity 'BLOCK' -Check 'ssh.config.upstream-managed' -Message 'User SSH config contains an upstream sshenc-managed block, which is outside the hello-approval integration boundary.' -Value $sshConfigPath
+        } elseif ($hasIncludes) {
+            Add-Finding -Severity 'BLOCK' -Check 'ssh.config.upstream-managed' -Message 'Cannot prove absence of an upstream sshenc-managed block because SSH Include directives are present and included files are not recursively inspected in v0.1.' -Value $includeLines
         } else {
-            Add-Finding -Severity 'PASS' -Check 'ssh.config.upstream-managed' -Message 'No upstream sshenc-managed block is present in user SSH config.'
+            Add-Finding -Severity 'PASS' -Check 'ssh.config.upstream-managed' -Message 'No upstream sshenc-managed block is present in the complete directly inspected SSH config.'
         }
 
-        $identityAgentLines = @($sshConfigText -split '\r?\n' | Where-Object { $_ -match '(?i)^\s*IdentityAgent(?:\s*=\s*|\s+)' })
+        $identityAgentLines = @($sshConfigLines | Where-Object { $_ -match '(?i)^\s*IdentityAgent(?:\s*=\s*|\s+)' })
         if ($identityAgentLines.Count -gt 0) {
             $sshencIdentity = @($identityAgentLines | Where-Object { $_ -match '(?i)sshenc' -or $_ -match [regex]::Escape($SocketPath) })
             if ($sshencIdentity.Count -gt 0) {
                 Add-Finding -Severity 'BLOCK' -Check 'ssh.config.identity-agent' -Message 'IdentityAgent points at sshenc/the signing pipe, which couples normal SSH transport to the signing agent.' -Value $sshencIdentity
+            } elseif ($hasIncludes) {
+                Add-Finding -Severity 'BLOCK' -Check 'ssh.config.identity-agent' -Message 'Cannot prove absence of a prohibited IdentityAgent because SSH Include directives are present and included files are not recursively inspected in v0.1.' -Value ([pscustomobject]@{ directIdentityAgent = @($identityAgentLines); includes = @($includeLines) })
             } else {
                 Add-Finding -Severity 'WARN' -Check 'ssh.config.identity-agent' -Message 'Unrelated IdentityAgent configuration is present and remains outside hello-approval ownership.' -Value $identityAgentLines
             }
+        } elseif ($hasIncludes) {
+            Add-Finding -Severity 'BLOCK' -Check 'ssh.config.identity-agent' -Message 'Cannot prove absence of a prohibited IdentityAgent because SSH Include directives are present and included files are not recursively inspected in v0.1.' -Value $includeLines
         } else {
-            Add-Finding -Severity 'PASS' -Check 'ssh.config.identity-agent' -Message 'No IdentityAgent directive is present.'
+            Add-Finding -Severity 'PASS' -Check 'ssh.config.identity-agent' -Message 'No IdentityAgent directive is present in the complete directly inspected SSH config.'
         }
     } else {
         Add-Finding -Severity 'INFO' -Check 'ssh.config' -Message 'User SSH config does not exist.' -Value $sshConfigPath
     }
-
     $gitCommand = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue
     if ($null -eq $gitCommand) { $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue }
     if ($null -eq $gitCommand) {

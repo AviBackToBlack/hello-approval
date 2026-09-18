@@ -419,14 +419,14 @@ foreach ($quarantine in @($runtimeQuarantine, $launcherQuarantine)) {
         }
     }
 }
-if ($RemoveRuntime) {
+if (-not $WhatIfPreference -and $RemoveRuntime) {
     $runtimeParent = Split-Path -Parent $runtimeRoot
     if (Test-Path -LiteralPath $runtimeParent -PathType Container) {
         $remaining = @(Get-ChildItem -LiteralPath $runtimeParent -Force -ErrorAction SilentlyContinue)
         if ($remaining.Count -eq 0) { Remove-Item -LiteralPath $runtimeParent -Force -ErrorAction SilentlyContinue }
     }
 }
-if ($RemoveLauncherCache) {
+if (-not $WhatIfPreference -and $RemoveLauncherCache) {
     $appRoot = Split-Path -Parent $launcherRoot
     if (Test-Path -LiteralPath $appRoot -PathType Container) {
         $remaining = @(Get-ChildItem -LiteralPath $appRoot -Force -ErrorAction SilentlyContinue)
