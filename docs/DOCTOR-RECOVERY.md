@@ -48,9 +48,11 @@ It checks:
 
 - the pinned runtime, sshenc policy, launcher surface, and owned Scheduled Task contract through the existing installers;
 - exact Scheduled Task ownership and critical definition;
+- the content-addressed installed launcher digest surface, including exact file cardinality and SHA-256 parity with the trusted source launcher;
 - task Running state, dedicated pipe presence, and the pinned `sshenc-agent.exe` process/command line;
 - prohibited `SSHENC_AGENT_SOCKET` overrides;
-- `SSH_AUTH_SOCK` / `GIT_SSH_COMMAND` takeover fingerprints that point normal SSH transport at sshenc or the dedicated signing pipe;
+- `SSH_AUTH_SOCK`, `GIT_SSH`, and `GIT_SSH_COMMAND` takeover fingerprints that point normal SSH transport at sshenc or the dedicated signing pipe;
+- system/global Git transport settings (`core.sshCommand` and `core.sshVariant`), plus effective target-repository transport settings when `-Repo` is supplied;
 - upstream sshenc-managed SSH config blocks and `IdentityAgent` coupling;
 - SSH `Include` directives are not recursively expanded in v0.1; when present, checks that would otherwise claim the absence of an upstream sshenc-managed block or prohibited `IdentityAgent` fail closed with `BLOCK`;
 - current stock Windows `ssh-agent` state without modifying it;
