@@ -166,6 +166,8 @@ Local verification additionally uses a project-owned `allowed_signers` trust sto
 
 GitHub verification is a separate verifier plane. HA-1.6 binds the hosting-platform result to the exact SHA of a commit whose local object already carries an SSH signature, rather than treating a `Verified` badge as evidence of the Windows Hello-backed local signing path. See [GitHub verification](GITHUB-VERIFICATION.md).
 
+HA-1.7 adds a read-only Doctor plus conservative, ownership-aware cleanup and explicit credential-rotation semantics. The Doctor reports current composition/drift without claiming historical knowledge of stock-agent state; cleanup preserves credential/account trust planes unless the user handles them explicitly. See [Doctor, cleanup, and credential recovery](DOCTOR-RECOVERY.md).
+
 The reference implementation does not configure ordinary SSH transport credentials.
 
 ## 10. Automation boundary

@@ -80,6 +80,8 @@ At minimum, recovery/retirement documentation must cover:
 
 `allowed_signers` is a local trust mapping, not a universal revocation service. Hosting-platform behavior for historical signatures is also platform policy and must be documented/tested rather than assumed. Future generic-approval verifiers should define explicit key lifecycle and, where needed, effective revocation times.
 
+For GitHub.com, HA-1.7 documents the current persistent-verification behavior explicitly: once GitHub has stored a verification record for a commit in a repository network, later signing-key rotation/revocation/removal does not retroactively remove that historical Verified record. Active local trust rotation and GitHub historical verification must therefore be reasoned about separately. See [Doctor, cleanup, and credential recovery](DOCTOR-RECOVERY.md).
+
 ## Replay and cross-purpose misuse
 
 Future approval formats must use domain separation and include enough context to prevent replay or semantic substitution.
