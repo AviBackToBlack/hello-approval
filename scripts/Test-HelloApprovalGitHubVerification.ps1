@@ -17,39 +17,49 @@ function Invoke-NativeCommand {
         [Parameter(Mandatory = $true)][string]$Exe,
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [Parameter(Mandatory = $true)][string]$Context,
-        [switch]$AllowExitOne,
-        [switch]$IncludeStderr
+        [switch]$AllowExitOne
     )
 
     $saved = $ErrorActionPreference
+    $stderrPath = [IO.Path]::GetTempFileName()
+    $output = @()
+    $stderr = @()
+    $rc = $null
     try {
         # Windows PowerShell 5.1 can promote native stderr to NativeCommandError
         # when ErrorActionPreference=Stop. Native exit status is authoritative here.
         $ErrorActionPreference = 'Continue'
-        if ($IncludeStderr) {
-            $output = @(& $Exe @Arguments 2>&1 | ForEach-Object { [string]$_ })
-        } else {
-            $output = @(& $Exe @Arguments 2>$null | ForEach-Object { [string]$_ })
-        }
+        $output = @(& $Exe @Arguments 2> $stderrPath | ForEach-Object { [string]$_ })
         $rc = $LASTEXITCODE
+        $stderr = if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
+            @([IO.File]::ReadAllLines($stderrPath) | ForEach-Object { [string]$_ })
+        } else {
+            @()
+        }
     } finally {
         $ErrorActionPreference = $saved
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
     }
 
     if ($rc -eq 0 -or ($AllowExitOne -and $rc -eq 1)) {
-        return [pscustomobject]@{ ExitCode = $rc; Output = $output }
+        return [pscustomobject]@{ ExitCode = $rc; Output = $output; Stderr = $stderr }
     }
 
-    $detail = if ($output.Count -gt 0) { ' ' + ($output -join ' | ') } else { '' }
+    $detailLines = @($stderr) + @($output)
+    $detail = if ($detailLines.Count -gt 0) { ' ' + ($detailLines -join ' | ') } else { '' }
     throw "$Context failed with exit $rc.$detail"
 }
-
 function Get-OneLine {
     param([Parameter(Mandatory = $true)]$Result, [Parameter(Mandatory = $true)][string]$Context)
     if ($Result.Output.Count -ne 1) {
         throw "$Context returned $($Result.Output.Count) lines; expected exactly one."
     }
     return [string]$Result.Output[0]
+}
+
+function Test-ObjectProperty {
+    param([Parameter(Mandatory = $true)]$Object, [Parameter(Mandatory = $true)][string]$Name)
+    return $null -ne $Object.PSObject.Properties[$Name]
 }
 
 if ($Repository -notmatch '\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z') {
@@ -76,14 +86,18 @@ if ($sha -notmatch '\A[0-9a-fA-F]{40}\z') { throw "Resolved commit is not a full
 $sha = $sha.ToLowerInvariant()
 
 $rawCommit = Invoke-NativeCommand -Exe $git -Arguments @('-C', $repoPath, 'cat-file', 'commit', $sha) -Context "Read local commit object $sha"
-$rawText = ($rawCommit.Output -join "`n")
-if ($rawText -notmatch '(?m)^gpgsig -----BEGIN SSH SIGNATURE-----$') {
-    throw "Local commit $sha is not an SSH-signed Git commit. Refusing to treat a hosting-platform signature or an unsigned commit as hello-approval evidence."
+$headerLines = New-Object System.Collections.Generic.List[string]
+foreach ($line in $rawCommit.Output) {
+    if ([string]::IsNullOrEmpty([string]$line)) { break }
+    [void]$headerLines.Add([string]$line)
 }
-if ($rawText -match '(?m)^gpgsig -----BEGIN PGP SIGNATURE-----$') {
-    throw "Local commit $sha contains a PGP signature, not the expected SSH signature."
+$gpgSigHeaders = @($headerLines | Where-Object { $_ -match '\Agpgsig ' })
+if ($gpgSigHeaders.Count -ne 1) {
+    throw "Local commit $sha does not contain exactly one gpgsig header. Refusing to treat commit-message text or an unsigned/malformed commit as hello-approval evidence."
 }
-
+if ([string]$gpgSigHeaders[0] -cne 'gpgsig -----BEGIN SSH SIGNATURE-----') {
+    throw "Local commit $sha is not SSH-signed; gpgsig header is '$($gpgSigHeaders[0])'."
+}
 $apiPath = "repos/$Repository/commits/$sha"
 $api = Invoke-NativeCommand -Exe $gh -Arguments @('api', '--hostname', 'github.com', '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', $apiPath) -Context "Read GitHub commit verification for $Repository@$sha"
 $jsonText = $api.Output -join "`n"
@@ -93,14 +107,26 @@ try {
     throw "GitHub commit API returned invalid JSON for $Repository@$sha. $($_.Exception.Message)"
 }
 
-if ([string]::IsNullOrWhiteSpace([string]$response.sha) -or ([string]$response.sha).ToLowerInvariant() -cne $sha) {
-    throw "GitHub returned a different commit SHA. Local=$sha Remote=$($response.sha)"
+if (-not (Test-ObjectProperty -Object $response -Name 'sha')) {
+    throw 'GitHub response is missing sha.'
 }
-if ($null -eq $response.commit -or $null -eq $response.commit.verification) {
+$remoteSha = [string]$response.sha
+if ([string]::IsNullOrWhiteSpace($remoteSha) -or $remoteSha.ToLowerInvariant() -cne $sha) {
+    throw "GitHub returned a different commit SHA. Local=$sha Remote=$remoteSha"
+}
+if (-not (Test-ObjectProperty -Object $response -Name 'commit') -or $null -eq $response.commit) {
+    throw 'GitHub response is missing commit.'
+}
+if (-not (Test-ObjectProperty -Object $response.commit -Name 'verification') -or $null -eq $response.commit.verification) {
     throw 'GitHub response is missing commit.verification.'
 }
 
 $verification = $response.commit.verification
+foreach ($requiredProperty in @('verified', 'reason', 'signature', 'payload', 'verified_at')) {
+    if (-not (Test-ObjectProperty -Object $verification -Name $requiredProperty)) {
+        throw "GitHub commit.verification is missing '$requiredProperty'."
+    }
+}
 if ($verification.verified -ne $true) {
     throw "GitHub did not verify $sha. verified=$($verification.verified) reason=$($verification.reason)"
 }

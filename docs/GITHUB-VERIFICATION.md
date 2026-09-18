@@ -30,7 +30,7 @@ After creating and pushing a locally signed commit, run:
 The verifier requires:
 
 1. the local revision resolves to one exact 40-hex commit object;
-2. the **local commit object itself** contains `gpgsig -----BEGIN SSH SIGNATURE-----`;
+2. the local commit **header block** contains exactly one `gpgsig` header and that header starts `gpgsig -----BEGIN SSH SIGNATURE-----`; commit-message text is never accepted as signature metadata;
 3. the GitHub REST commit endpoint returns the **same SHA**;
 4. `commit.verification.verified` is `true`;
 5. `commit.verification.reason` is exactly `valid`;
