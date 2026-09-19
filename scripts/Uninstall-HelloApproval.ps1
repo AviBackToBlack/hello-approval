@@ -75,8 +75,12 @@ function Invoke-Git {
     $saved = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
+        $global:LASTEXITCODE = $null
         $output = @(& $Git @Arguments 2>&1 | ForEach-Object { [string]$_ })
-        $rc = $LASTEXITCODE
+        $rc = $global:LASTEXITCODE
+        if ($null -eq $rc) {
+            throw "$Context could not launch Git executable: $Git"
+        }
     } finally {
         $ErrorActionPreference = $saved
     }
