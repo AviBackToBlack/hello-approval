@@ -43,8 +43,10 @@ Names may change during implementation review; the semantics below are the desig
 
 - schema exactly `hello-approval/upstream-pin/v1`;
 - file names are non-empty and unique under Windows ordinal-ignore-case comparison so a pin cannot describe two names that collide in the normal Windows namespace;
+- each file name is one leaf name only: not `.` or `..`, and containing neither forward nor backward path separators;
 - dispositions are exactly from `required`, `unused`, `excluded`;
 - `installation_policy.installed_files` contains non-empty names unique under Windows ordinal-ignore-case comparison;
+- each `installed_files` entry is likewise one leaf name only: not `.` or `..`, with no path separators;
 - after rejecting ignore-case name collisions, the exact case-sensitive `installed_files` set equals the exact set of records whose disposition is `required`;
 - every installed file has exactly one required provenance record;
 - required sizes are non-negative integers;
@@ -60,7 +62,7 @@ Exactly three acceptance/rejection changes are approved by this design:
 
 1. **Intermediate ancestry hardening (#6).** Existing descendant components below the declared trusted base must be non-reparse. Callers that currently check only the leaf/root become stricter.
 2. **Canonical exact-case runtime surface.** `bin` and installed runtime filenames must match the pin's canonical spelling exactly. This intentionally makes `Install-HelloApprovalRuntime.ps1` and `Test-HelloApprovalPreflight.ps1` stricter than today; their current case-insensitive checks are treated as historical drift, not the contract to preserve.
-3. **Malformed-pin rejection.** Duplicate/colliding names, duplicate required records, invalid dispositions, required/installed cardinality mismatches, malformed hashes, and related internally inconsistent pin states fail at the shared policy layer. Callers that currently select the first matching record or defer failure until filesystem validation become stricter.
+3. **Malformed-pin rejection.** Invalid/non-leaf names, duplicate/colliding names, duplicate required records, invalid dispositions, invalid sizes, required/installed cardinality mismatches, malformed hashes, and related internally inconsistent pin states fail at the shared policy layer. Callers that currently select the first matching record or defer failure until filesystem validation become stricter.
 
 All other migration behavior must preserve the caller's current acceptance/rejection semantics unless a separate reviewed design explicitly approves another delta.
 
@@ -185,13 +187,23 @@ The implementation slice must first add dependency-free Windows PowerShell 5.1 t
 
 ### Pin-policy rejection
 
+- missing schema;
+- wrong schema value;
+- empty/whitespace file name;
+- file name containing a forward/backward path separator;
+- file name equal to `.` or `..`;
 - duplicate file record;
 - case-colliding file records such as `Foo.exe` and `foo.exe`;
+- empty/whitespace `installed_files` entry;
+- `installed_files` entry containing a path separator;
+- `installed_files` entry equal to `.` or `..`;
 - duplicate `installed_files` entry;
 - case-colliding `installed_files` entries;
 - unknown disposition;
 - required/installed set mismatch;
 - missing required record;
+- non-integer `size_bytes`;
+- negative `size_bytes`;
 - malformed SHA-256.
 
 ### Runtime-surface rejection
