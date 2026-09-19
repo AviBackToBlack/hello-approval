@@ -42,15 +42,29 @@ Names may change during implementation review; the semantics below are the desig
 `Assert-HelloApprovalPinPolicy` validates installed-runtime policy consistency:
 
 - schema exactly `hello-approval/upstream-pin/v1`;
-- file names are non-empty and unique under ordinal case-sensitive comparison;
+- file names are non-empty and unique under Windows ordinal-ignore-case comparison so a pin cannot describe two names that collide in the normal Windows namespace;
 - dispositions are exactly from `required`, `unused`, `excluded`;
-- `installation_policy.installed_files` contains non-empty unique names under ordinal case-sensitive comparison;
-- the exact case-sensitive installed-file set equals the exact set of records whose disposition is `required`;
+- `installation_policy.installed_files` contains non-empty names unique under Windows ordinal-ignore-case comparison;
+- after rejecting ignore-case name collisions, the exact case-sensitive `installed_files` set equals the exact set of records whose disposition is `required`;
 - every installed file has exactly one required provenance record;
 - required sizes are non-negative integers;
 - required SHA-256 values are exactly 64 hexadecimal characters.
 
 Installer-only policy such as target architecture and distribution format remains caller-specific unless a later design requires centralizing it.
+
+## Approved hardening deltas versus Phase 1 callers
+
+The Phase 2 shared contract is **not** literal behavioral parity with every existing caller. Current Phase 1 copies have already diverged.
+
+Exactly three acceptance/rejection changes are approved by this design:
+
+1. **Intermediate ancestry hardening (#6).** Existing descendant components below the declared trusted base must be non-reparse. Callers that currently check only the leaf/root become stricter.
+2. **Canonical exact-case runtime surface.** `bin` and installed runtime filenames must match the pin's canonical spelling exactly. This intentionally makes `Install-HelloApprovalRuntime.ps1` and `Test-HelloApprovalPreflight.ps1` stricter than today; their current case-insensitive checks are treated as historical drift, not the contract to preserve.
+3. **Malformed-pin rejection.** Duplicate/colliding names, duplicate required records, invalid dispositions, required/installed cardinality mismatches, malformed hashes, and related internally inconsistent pin states fail at the shared policy layer. Callers that currently select the first matching record or defer failure until filesystem validation become stricter.
+
+All other migration behavior must preserve the caller's current acceptance/rejection semantics unless a separate reviewed design explicitly approves another delta.
+
+The implementation suite must characterize each current caller first, then prove that every observed difference after migration belongs to one of the three approved deltas above. "Parity" in this Phase 2 work means **baseline equivalence except for enumerated approved hardening deltas**, not literal identity with every divergent Phase 1 copy.
 
 ## Trusted-base descendant paths
 
@@ -172,7 +186,9 @@ The implementation slice must first add dependency-free Windows PowerShell 5.1 t
 ### Pin-policy rejection
 
 - duplicate file record;
+- case-colliding file records such as `Foo.exe` and `foo.exe`;
 - duplicate `installed_files` entry;
+- case-colliding `installed_files` entries;
 - unknown disposition;
 - required/installed set mismatch;
 - missing required record;
@@ -206,26 +222,38 @@ Every redirected fixture must fail before an integration caller would mutate sta
 
 ## Migration order
 
-After parity:
+After baseline characterization and shared-library parity tests:
 
 1. `Install-HelloApprovalRuntime.ps1`
 2. `Install-HelloApprovalScheduledTask.ps1`
-3. `Install-HelloApprovalGitConfig.ps1`
-4. `Test-HelloApprovalPreflight.ps1`
-5. `Test-HelloApprovalDoctor.ps1`
-6. `Uninstall-HelloApproval.ps1`
+3. `Start-HelloApprovalAgent.ps1`
+4. `Install-HelloApprovalGitConfig.ps1`
+5. `Install-HelloApprovalLocalVerification.ps1`
+6. `Test-HelloApprovalLocalVerification.ps1`
+7. `Test-HelloApprovalPreflight.ps1`
+8. `Test-HelloApprovalDoctor.ps1`
+9. `Uninstall-HelloApproval.ps1`
 
-The runtime installer defines the original contract; integration installers consume it before mutation; diagnostic callers need structured exception translation; destructive cleanup migrates last.
+Rationale:
 
-Each migration PR must prove no intentional acceptance/rejection change except the explicitly approved #6 ancestry hardening.
+- the runtime installer establishes the installed-runtime producer contract;
+- the Scheduled Task installer and launcher are next because they hand off and then execute the pinned `sshenc-agent.exe`; `Start-HelloApprovalAgent.ps1` also contains the existing mutating project-log ancestry walker that should converge on the same trusted-base semantics instead of surviving as a duplicate implementation;
+- Git and local-verification installers consume `%LOCALAPPDATA%` / `%USERPROFILE%` trusted paths before integration mutation;
+- the local verifier consumes the same public-key/trust-store paths read-only;
+- preflight and Doctor require exception-to-finding translation;
+- destructive cleanup migrates last after equivalence is well established.
+
+The shared path helper is intentionally broader than the pinned-runtime helper so these non-runtime trusted-path consumers can reuse the same containment/ancestry semantics without pretending their files are part of the sshenc runtime surface.
+
+Each migration PR must include baseline fixtures for that caller and prove no acceptance/rejection change except the three approved hardening deltas in this document.
 
 ## Relationship to #6 and #8
 
 Issue #8 owns centralization and parity.
 
-Issue #6 supplies the one intentional hardening delta: intermediate reparse ancestry below a declared trusted base.
+Issue #6 supplies the ancestry hardening delta. The same Phase 2 contract also explicitly normalizes two pieces of Phase 1 drift discovered during design review: canonical exact-case runtime naming and stricter malformed-pin rejection.
 
-They therefore share one implementation rather than landing independent path walkers.
+They therefore share one implementation rather than landing independent path walkers or preserving accidental divergence between old callers.
 
 ## Out of scope
 
