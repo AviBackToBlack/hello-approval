@@ -227,8 +227,15 @@ try {
     $realFile = Join-Path $realDir 'real.exe'; [IO.File]::WriteAllText($realFile,'x')
     $linkDir = Join-Path $trustedLink 'surface'; [void][IO.Directory]::CreateDirectory($linkDir)
     $linkFile = Join-Path $linkDir 'linked.exe'
-    $linkOutput = & cmd.exe /d /c mklink "$linkFile" "$realFile" 2>&1
-    if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $linkFile)) {
+    $savedEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $linkOutput = @(& cmd.exe /d /c mklink "$linkFile" "$realFile" 2>&1 | ForEach-Object { [string]$_ })
+        $linkRc = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedEap
+    }
+    if ($linkRc -eq 0 -and (Test-Path -LiteralPath $linkFile)) {
         Invoke-ThrowCase 'path file-leaf reparse rejected' { [void](Assert-HelloApprovalTrustedPath -TrustedBase $trustedLink -Path $linkFile -ExpectedType File) }
     } else {
         Write-TestSkip -Name 'path file-leaf reparse rejected' -Reason 'symbolic-link creation unavailable'
