@@ -134,6 +134,8 @@ try {
     }
     $p = Copy-Object $fixture.Pin; $p.installation_policy.installed_files += 'alpha.exe'; $pinCases += [pscustomobject]@{Name='pin duplicate installed entry';Pin=$p}
     $p = Copy-Object $fixture.Pin; $p.installation_policy.installed_files += 'ALPHA.EXE'; $pinCases += [pscustomobject]@{Name='pin case-colliding installed entry';Pin=$p}
+    $p = Copy-Object $fixture.Pin; $p.installation_policy.installed_files[0]='ALPHA.EXE'; $pinCases += [pscustomobject]@{Name='pin installed exact-case mismatch';Pin=$p}
+    $p = Copy-Object $fixture.Pin; $p.files[0].name='ALPHA.EXE'; $pinCases += [pscustomobject]@{Name='pin required record exact-case mismatch';Pin=$p}
     $p = Copy-Object $fixture.Pin; $p.files[0].policy.disposition='mystery'; $pinCases += [pscustomobject]@{Name='pin unknown disposition';Pin=$p}
     $p = Copy-Object $fixture.Pin; $p.installation_policy.installed_files=@('alpha.exe'); $pinCases += [pscustomobject]@{Name='pin required-installed mismatch';Pin=$p}
     $p = Copy-Object $fixture.Pin; $p.files[0].policy.disposition='unused'; $pinCases += [pscustomobject]@{Name='pin missing required record';Pin=$p}
@@ -248,4 +250,3 @@ Write-Host ''
 Write-Host ("RESULT passed={0} failed={1} skipped={2}" -f $script:Passed,$script:Failed,$script:Skipped)
 if ($script:Failed -ne 0) { exit 1 }
 exit 0
-

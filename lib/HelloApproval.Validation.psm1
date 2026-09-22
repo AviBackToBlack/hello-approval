@@ -334,4 +334,3 @@ Export-ModuleMember -Function @(
     'Get-HelloApprovalFileSha256',
     'Assert-HelloApprovalPinnedRuntime'
 )
-
