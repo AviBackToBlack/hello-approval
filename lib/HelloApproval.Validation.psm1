@@ -35,7 +35,11 @@ function Get-HelloApprovalFileSha256 {
 }
 
 function Test-HelloApprovalLeafName {
-    param([Parameter(Mandatory = $true)][string]$Name)
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Name
+    )
 
     if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
     if ($Name -ceq '.' -or $Name -ceq '..') { return $false }
