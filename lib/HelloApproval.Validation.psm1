@@ -93,19 +93,28 @@ function Assert-HelloApprovalPinPolicy {
         $Pin
     )
 
-    if ([string]$Pin.schema -cne 'hello-approval/upstream-pin/v1') {
-        throw "Unsupported or missing provenance pin schema: '$($Pin.schema)'"
+    $schemaProperty = $Pin.PSObject.Properties['schema']
+    $schema = if ($null -eq $schemaProperty) { $null } else { [string]$schemaProperty.Value }
+    if ($schema -cne 'hello-approval/upstream-pin/v1') {
+        throw "Unsupported or missing provenance pin schema: '$schema'"
     }
 
-    if ($null -eq $Pin.files) {
+    $filesProperty = $Pin.PSObject.Properties['files']
+    if ($null -eq $filesProperty -or $null -eq $filesProperty.Value) {
         throw 'Provenance pin files collection is missing.'
     }
-    if ($null -eq $Pin.installation_policy -or $null -eq $Pin.installation_policy.installed_files) {
+
+    $installationPolicyProperty = $Pin.PSObject.Properties['installation_policy']
+    if ($null -eq $installationPolicyProperty -or $null -eq $installationPolicyProperty.Value) {
+        throw 'Provenance pin installation_policy.installed_files is missing.'
+    }
+    $installedFilesProperty = $installationPolicyProperty.Value.PSObject.Properties['installed_files']
+    if ($null -eq $installedFilesProperty -or $null -eq $installedFilesProperty.Value) {
         throw 'Provenance pin installation_policy.installed_files is missing.'
     }
 
-    $files = @($Pin.files)
-    $installed = @($Pin.installation_policy.installed_files)
+    $files = @($filesProperty.Value)
+    $installed = @($installedFilesProperty.Value)
 
     $fileNames = @($files | ForEach-Object { if ($null -eq $_) { $null } else { $_.name } })
     Assert-HelloApprovalUniqueWindowsNames -Names $fileNames -Purpose 'Provenance file records'
@@ -195,6 +204,19 @@ function Assert-HelloApprovalTrustedPath {
     $same = [string]::Equals($targetTrimmed, $baseComparable, [StringComparison]::OrdinalIgnoreCase)
 
     if ($same) {
+        try {
+            $baseItem = Get-Item -LiteralPath $targetFull -Force -ErrorAction Stop
+        } catch [System.Management.Automation.ItemNotFoundException] {
+            if ($AllowMissing) { return $targetFull }
+            throw "Trusted path is missing: $targetFull"
+        }
+
+        if ($ExpectedType -ceq 'Directory' -and -not $baseItem.PSIsContainer) {
+            throw "Trusted path leaf must be a directory: $targetFull"
+        }
+        if ($ExpectedType -ceq 'File' -and $baseItem.PSIsContainer) {
+            throw "Trusted path leaf must be a file: $targetFull"
+        }
         return $targetFull
     }
 
@@ -217,14 +239,15 @@ function Assert-HelloApprovalTrustedPath {
         $cursor = Join-Path $cursor $parts[$i]
         $isLeaf = ($i -eq ($parts.Count - 1))
 
-        if (-not (Test-Path -LiteralPath $cursor)) {
+        try {
+            $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+        } catch [System.Management.Automation.ItemNotFoundException] {
             if ($AllowMissing) {
                 return $targetFull
             }
             throw "Trusted path component is missing: $cursor"
         }
 
-        $item = Get-Item -LiteralPath $cursor -Force
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
             throw "Trusted path component must not be a reparse point: $cursor"
         }
