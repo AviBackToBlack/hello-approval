@@ -247,6 +247,70 @@ function Invoke-InstallerWhatIf {
     }
 }
 
+function Invoke-InstallerToRegistrationBoundary {
+    param(
+        [string]$Installer,
+        [string]$LocalAppData,
+        [string]$ConfigPath
+    )
+
+    $oldLocal = $env:LOCALAPPDATA
+    $oldConfig = $env:HELLO_APPROVAL_TEST_CONFIG_PATH
+    try {
+        $env:LOCALAPPDATA = $LocalAppData
+        $env:HELLO_APPROVAL_TEST_CONFIG_PATH = $ConfigPath
+
+        $sentinel = 'HELLO_APPROVAL_TEST_REGISTRATION_BOUNDARY'
+        $caught = $null
+
+        try {
+            & {
+                param($InstallerPath,$SentinelText)
+
+                function Register-ScheduledTask {
+                    [CmdletBinding()]
+                    param(
+                        [string]$TaskName,
+                        [string]$TaskPath,
+                        $Action,
+                        $Trigger,
+                        $Principal,
+                        $Settings,
+                        [string]$Description,
+                        [switch]$Force
+                    )
+                    throw $SentinelText
+                }
+
+                function Unregister-ScheduledTask {
+                    [CmdletBinding(SupportsShouldProcess = $true)]
+                    param(
+                        [string]$TaskName,
+                        [string]$TaskPath
+                    )
+                    return
+                }
+
+                & $InstallerPath
+            } $Installer $sentinel
+        } catch {
+            $caught = [string]$_.Exception.Message
+        }
+
+        return [pscustomobject]@{
+            Sentinel = $sentinel
+            ExceptionMessage = $caught
+        }
+    } finally {
+        $env:LOCALAPPDATA = $oldLocal
+        if ($null -eq $oldConfig) {
+            Remove-Item Env:HELLO_APPROVAL_TEST_CONFIG_PATH -ErrorAction SilentlyContinue
+        } else {
+            $env:HELLO_APPROVAL_TEST_CONFIG_PATH = $oldConfig
+        }
+    }
+}
+
 $existingTask = Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue
 if ($null -ne $existingTask) {
     throw "Test precondition failed: Scheduled Task already exists: \$taskName"
@@ -269,6 +333,44 @@ try {
         Pass 'exact runtime reaches Scheduled Task WhatIf gate without filesystem mutation'
     } else {
         Fail 'exact runtime reaches Scheduled Task WhatIf gate without filesystem mutation' ("rc={0} launcherRoot={1} output={2}" -f $exact.ExitCode,(Test-Path -LiteralPath $launcherRoot),($exact.Output -join ' | '))
+    }
+
+    if (-not $ExpectedPhase1) {
+        $boundary = Invoke-InstallerToRegistrationBoundary -Installer $exactRepo.Installer -LocalAppData $exactLocal -ConfigPath $exactConfig
+        $launcherHash = Get-FileSha256Local -Path $sourceLauncher
+        $launcherVersionRoot = Join-Path $launcherRoot $launcherHash
+        $installedLauncher = Join-Path $launcherVersionRoot 'Start-HelloApprovalAgent.ps1'
+        $launcherItems = if (Test-Path -LiteralPath $launcherVersionRoot -PathType Container) {
+            @(Get-ChildItem -LiteralPath $launcherVersionRoot -Force)
+        } else {
+            @()
+        }
+        $stagingItems = if (Test-Path -LiteralPath $launcherRoot -PathType Container) {
+            @(Get-ChildItem -LiteralPath $launcherRoot -Force | Where-Object { $_.Name -like '.staging.*' })
+        } else {
+            @()
+        }
+        $taskAfterBoundary = Get-ScheduledTask -TaskName $taskName -TaskPath ([string][char]92) -ErrorAction SilentlyContinue
+
+        $launcherExact = (
+            $launcherItems.Count -eq 1 -and
+            $launcherItems[0].Name -ceq 'Start-HelloApprovalAgent.ps1' -and
+            -not $launcherItems[0].PSIsContainer -and
+            -not ($launcherItems[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+            (Get-FileSha256Local -Path $installedLauncher) -ceq $launcherHash
+        )
+
+        if ($boundary.ExceptionMessage -ceq $boundary.Sentinel -and
+            $launcherExact -and
+            $stagingItems.Count -eq 0 -and
+            $null -eq $taskAfterBoundary) {
+            Pass 'launcher write path reaches stubbed registration boundary with exact committed cache surface'
+        } else {
+            Fail 'launcher write path reaches stubbed registration boundary with exact committed cache surface' (
+                "exception={0} launcherExact={1} stagingCount={2} taskPresent={3}" -f
+                $boundary.ExceptionMessage,$launcherExact,$stagingItems.Count,($null -ne $taskAfterBoundary)
+            )
+        }
     }
 
     # Exact-case behavior is already strict in Phase 1 and must remain strict.
