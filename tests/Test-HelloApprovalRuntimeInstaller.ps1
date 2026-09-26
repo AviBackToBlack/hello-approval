@@ -179,6 +179,34 @@ try {
         Fail 'WhatIf verifies without installing runtime' ("rc={0} runtimeExists={1}" -f $whatIf.ExitCode,(Test-Path -LiteralPath $runtimeWhatIf))
     }
 
+    # Delta #3 wiring proof: malformed pin must fail before the WhatIf mutation gate.
+    # Archive metadata/entries remain valid, so deleting the early shared pin-policy
+    # assertion would make this invocation return success without reaching staging.
+    $malformedRoot = Join-Path $root 'malformed-pin'
+    [void][IO.Directory]::CreateDirectory($malformedRoot)
+    $malformedFixture = New-SyntheticRepo -Root $malformedRoot
+    $malformedPinPath = Join-Path (Join-Path $malformedFixture.Repo 'provenance') 'sshenc-v0.6.101.json'
+    $malformedPin = Get-Content -LiteralPath $malformedPinPath -Raw | ConvertFrom-Json
+    $malformedPin.installation_policy.installed_files = @('alpha.exe')
+    [IO.File]::WriteAllText(
+        $malformedPinPath,
+        ($malformedPin | ConvertTo-Json -Depth 20),
+        [Text.UTF8Encoding]::new($false)
+    )
+
+    $localMalformed = Join-Path $root 'local-malformed'
+    $malformedResult = Invoke-Installer -Installer $malformedFixture.Installer -Archive $malformedFixture.Archive -LocalAppData $localMalformed -WhatIf
+    $malformedRuntimeBase = Join-Path (Join-Path (Join-Path $localMalformed 'hello-approval') 'runtime') 'sshenc'
+    $malformedRuntime = Join-Path $malformedRuntimeBase 'v-test'
+    $malformedMessage = $malformedResult.Output -join ' | '
+    if ($malformedResult.ExitCode -ne 0 -and
+        $malformedMessage -match 'cardinality does not match required provenance records' -and
+        -not (Test-Path -LiteralPath $malformedRuntime)) {
+        Pass 'installer rejects malformed pin before WhatIf mutation gate'
+    } else {
+        Fail 'installer rejects malformed pin before WhatIf mutation gate' ("rc={0} runtimeExists={1} output={2}" -f $malformedResult.ExitCode,(Test-Path -LiteralPath $malformedRuntime),$malformedMessage)
+    }
+
     # Approved delta: Phase 1 accepted case-only surface drift; hardened migration must reject it.
     $bin = Join-Path $runtimeExact 'bin'
     Rename-Item -LiteralPath $bin -NewName 'bin.tmp'
