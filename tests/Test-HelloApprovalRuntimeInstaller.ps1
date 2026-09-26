@@ -55,6 +55,7 @@ function New-SyntheticRepo {
     }
 
     $archive = Join-Path $Root 'synthetic.zip'
+    Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $payloads = [ordered]@{
         'alpha.exe' = [byte[]](1,2,3,4,5)
