@@ -231,7 +231,7 @@ function Assert-LauncherCacheSurface {
     Assert-RealDirectory -Path $LauncherRoot -Purpose 'hello-approval launcher cache'
 
     foreach ($entry in @(Get-ChildItem -LiteralPath $LauncherRoot -Force)) {
-        if (-not $entry.PSIsContainer -or ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $entry.Name -notmatch 'A[a-f0-9]{64}z') {
+        if (-not $entry.PSIsContainer -or ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $entry.Name -notmatch '^[a-f0-9]{64}$') {
             throw "Refusing launcher-cache removal: unexpected cache entry: $($entry.FullName)"
         }
 
