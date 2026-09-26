@@ -200,6 +200,46 @@ try {
         Expected='Unsupported or missing provenance pin schema'
     }
 
+    $p = Copy-Object $fixture.Pin
+    $p.files[0].PSObject.Properties.Remove('name')
+    $pinCases += [pscustomobject]@{
+        Name='pin record missing name'
+        Pin=$p
+        Expected='Provenance file record is missing name'
+    }
+
+    $p = Copy-Object $fixture.Pin
+    $p.files[0].PSObject.Properties.Remove('policy')
+    $pinCases += [pscustomobject]@{
+        Name='pin record missing policy'
+        Pin=$p
+        Expected='is missing policy'
+    }
+
+    $p = Copy-Object $fixture.Pin
+    $p.files[0].policy.PSObject.Properties.Remove('disposition')
+    $pinCases += [pscustomobject]@{
+        Name='pin record missing policy disposition'
+        Pin=$p
+        Expected='is missing policy.disposition'
+    }
+
+    $p = Copy-Object $fixture.Pin
+    $p.files[0].PSObject.Properties.Remove('size_bytes')
+    $pinCases += [pscustomobject]@{
+        Name='pin required record missing size'
+        Pin=$p
+        Expected='is missing size_bytes'
+    }
+
+    $p = Copy-Object $fixture.Pin
+    $p.files[0].PSObject.Properties.Remove('sha256')
+    $pinCases += [pscustomobject]@{
+        Name='pin required record missing sha'
+        Pin=$p
+        Expected='is missing sha256'
+    }
+
     foreach ($bad in @('', '   ', '.', '..', 'dir/name.exe', 'dir\name.exe')) {
         $p = Copy-Object $fixture.Pin
         $p.files[0].name=$bad

@@ -120,28 +120,66 @@ function Assert-HelloApprovalPinPolicy {
     $files = @($filesProperty.Value)
     $installed = @($installedFilesProperty.Value)
 
-    $fileNames = @($files | ForEach-Object { if ($null -eq $_) { $null } else { $_.name } })
-    Assert-HelloApprovalUniqueWindowsNames -Names $fileNames -Purpose 'Provenance file records'
-    Assert-HelloApprovalUniqueWindowsNames -Names $installed -Purpose 'installation_policy.installed_files'
-
-    $validDispositions = @('required', 'unused', 'excluded')
+    $validatedRecords = New-Object System.Collections.Generic.List[object]
     foreach ($file in $files) {
         if ($null -eq $file) {
             throw 'Provenance pin contains a null file record.'
         }
 
-        $disposition = if ($null -eq $file.policy) { $null } else { [string]$file.policy.disposition }
+        $nameProperty = $file.PSObject.Properties['name']
+        if ($null -eq $nameProperty) {
+            throw 'Provenance file record is missing name.'
+        }
+        $name = [string]$nameProperty.Value
+
+        $policyProperty = $file.PSObject.Properties['policy']
+        if ($null -eq $policyProperty -or $null -eq $policyProperty.Value) {
+            throw "Provenance file record '$name' is missing policy."
+        }
+
+        $dispositionProperty = $policyProperty.Value.PSObject.Properties['disposition']
+        if ($null -eq $dispositionProperty) {
+            throw "Provenance file record '$name' is missing policy.disposition."
+        }
+        $disposition = [string]$dispositionProperty.Value
+
+        [void]$validatedRecords.Add([pscustomobject]@{
+            Record = $file
+            Name = $name
+            Disposition = $disposition
+        })
+    }
+
+    $fileNames = @($validatedRecords | ForEach-Object { $_.Name })
+    Assert-HelloApprovalUniqueWindowsNames -Names $fileNames -Purpose 'Provenance file records'
+    Assert-HelloApprovalUniqueWindowsNames -Names $installed -Purpose 'installation_policy.installed_files'
+
+    $validDispositions = @('required', 'unused', 'excluded')
+    foreach ($validated in $validatedRecords) {
+        $file = $validated.Record
+        $name = $validated.Name
+        $disposition = $validated.Disposition
+
         if (-not ($validDispositions -ccontains $disposition)) {
-            throw "Unsupported file policy disposition '$disposition' for '$($file.name)'."
+            throw "Unsupported file policy disposition '$disposition' for '$name'."
         }
 
         if ($disposition -ceq 'required') {
-            if (-not (Test-HelloApprovalNonNegativeInteger -Value $file.size_bytes)) {
-                throw "Required file '$($file.name)' size_bytes must be a non-negative integer."
+            $sizeProperty = $file.PSObject.Properties['size_bytes']
+            if ($null -eq $sizeProperty) {
+                throw "Required file '$name' is missing size_bytes."
             }
-            $sha = [string]$file.sha256
-            if ($sha -notmatch '\A[0-9A-Fa-f]{64}\z') {
-                throw "Required file '$($file.name)' sha256 must be exactly 64 hexadecimal characters."
+            if (-not (Test-HelloApprovalNonNegativeInteger -Value $sizeProperty.Value)) {
+                throw "Required file '$name' size_bytes must be a non-negative integer."
+            }
+
+            $shaProperty = $file.PSObject.Properties['sha256']
+            if ($null -eq $shaProperty) {
+                throw "Required file '$name' is missing sha256."
+            }
+            $sha = [string]$shaProperty.Value
+            if ($sha -notmatch '^[0-9A-Fa-f]{64}$') {
+                throw "Required file '$name' sha256 must be exactly 64 hexadecimal characters."
             }
         }
     }
