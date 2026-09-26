@@ -306,7 +306,7 @@ $sourceValidationModule = Assert-RegularFile -Path $validationModulePath -Purpos
 $launcherHash = Get-FileSha256 -Path $sourceLauncher
 $validationModuleHash = Get-FileSha256 -Path $sourceValidationModule
 $launcherSource = Get-Content -LiteralPath $sourceLauncher -Raw
-$validationPinMatches = [regex]::Matches($launcherSource, "(?m)^\$ValidationModuleSha256 = '([a-f0-9]{64})'$")
+$validationPinMatches = [regex]::Matches($launcherSource, '(?m)^\$ValidationModuleSha256 = ''([a-f0-9]{64})''$')
 if ($validationPinMatches.Count -ne 1 -or $validationPinMatches[0].Groups[1].Value -cne $validationModuleHash) {
     throw 'Repository launcher validation-module SHA-256 pin does not match lib/HelloApproval.Validation.psm1.'
 }

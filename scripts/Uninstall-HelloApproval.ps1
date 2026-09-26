@@ -256,7 +256,7 @@ function Assert-LauncherCacheSurface {
             }
 
             $launcherSource = Get-Content -LiteralPath $launcherPath -Raw
-            $pinMatches = [regex]::Matches($launcherSource, "(?m)^\$ValidationModuleSha256 = '([a-f0-9]{64})'$")
+            $pinMatches = [regex]::Matches($launcherSource, '(?m)^\$ValidationModuleSha256 = ''([a-f0-9]{64})''$')
             if ($pinMatches.Count -ne 1) {
                 throw "Refusing launcher-cache removal: v2 launcher does not contain exactly one validation-module SHA-256 pin: $launcherPath"
             }

@@ -469,7 +469,7 @@ try {
     if ($null -ne $launcherHash) {
         try {
             $launcherSource = Get-Content -LiteralPath $sourceLauncher -Raw
-            $pinMatches = [regex]::Matches($launcherSource, "(?m)^\$ValidationModuleSha256 = '([a-f0-9]{64})'$")
+            $pinMatches = [regex]::Matches($launcherSource, '(?m)^\$ValidationModuleSha256 = ''([a-f0-9]{64})''$')
             if ($pinMatches.Count -eq 1) {
                 $launcherPinnedModuleHash = $pinMatches[0].Groups[1].Value
             }
