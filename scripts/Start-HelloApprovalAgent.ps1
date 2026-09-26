@@ -53,34 +53,22 @@ function Assert-ProjectLogDirectory {
         throw "LogDirectory must stay under the project-owned root '$projectRoot': $full"
     }
 
-    # Establish/verify the project root before traversing any requested child.
-    # Never create through an existing junction/symlink and reject a project
-    # root that is itself redirected.
-    if (-not (Test-Path -LiteralPath $projectRoot)) {
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $projectRoot -ExpectedType Directory -AllowMissing)
+    if (-not (Test-Path -LiteralPath $projectRoot -PathType Container)) {
         New-Item -ItemType Directory -Path $projectRoot | Out-Null
     }
-    $rootItem = Get-Item -LiteralPath $projectRoot -Force
-    if (-not $rootItem.PSIsContainer -or ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "Project-owned log root must be a real directory, not a reparse point: $projectRoot"
-    }
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $projectRoot -ExpectedType Directory)
 
     $relative = $full.Substring($prefix.Length)
     $parts = @($relative -split '[\\/]' | Where-Object { $_ -ne '' })
     $cursor = $projectRoot
     foreach ($part in $parts) {
         $next = Join-Path $cursor $part
-        if (Test-Path -LiteralPath $next) {
-            $item = Get-Item -LiteralPath $next -Force
-            if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-                throw "Project log path must use real directories, not reparse points: $next"
-            }
-        } else {
+        [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $next -ExpectedType Directory -AllowMissing)
+        if (-not (Test-Path -LiteralPath $next -PathType Container)) {
             New-Item -ItemType Directory -Path $next | Out-Null
-            $item = Get-Item -LiteralPath $next -Force
-            if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-                throw "Newly created project log path is not a real directory: $next"
-            }
         }
+        [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $next -ExpectedType Directory)
         $cursor = $next
     }
     return $full
@@ -131,6 +119,13 @@ try {
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
         throw 'LOCALAPPDATA is not available.'
     }
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $validationModulePath = Join-Path (Join-Path $repoRoot 'lib') 'HelloApproval.Validation.psm1'
+    if (-not (Test-Path -LiteralPath $validationModulePath -PathType Leaf)) {
+        throw "Shared validation module is missing: $validationModulePath"
+    }
+    Import-Module $validationModulePath -Force -ErrorAction Stop
+
     if ([string]::IsNullOrWhiteSpace($LogDirectory)) {
         $LogDirectory = Join-Path $env:LOCALAPPDATA 'hello-approval\logs'
     }
