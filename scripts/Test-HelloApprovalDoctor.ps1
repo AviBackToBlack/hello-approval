@@ -476,7 +476,7 @@ try {
         } catch {}
     }
 
-    $launcherVersionRoot = if ($null -ne $launcherHash) { Join-Path $projectRoot ("applauncher{0}" -f $launcherHash) } else { $null }
+    $launcherVersionRoot = if ($null -ne $launcherHash) { Join-Path (Join-Path (Join-Path $projectRoot 'app') 'launcher') $launcherHash } else { $null }
     $installedLauncher = if ($null -ne $launcherVersionRoot) { Join-Path $launcherVersionRoot 'Start-HelloApprovalAgent.ps1' } else { $null }
     $installedValidationModule = if ($null -ne $launcherVersionRoot) { Join-Path $launcherVersionRoot 'HelloApproval.Validation.psm1' } else { $null }
     $launcherSurfaceValid = $false
