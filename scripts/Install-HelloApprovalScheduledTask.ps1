@@ -46,87 +46,14 @@ function Assert-RegularFile {
     return $full
 }
 
-function Assert-RealDirectory {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Purpose
-    )
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-        throw "$Purpose is missing: $Path"
-    }
-    $item = Get-Item -LiteralPath $Path -Force
-    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "$Purpose must be a real non-reparse directory: $Path"
-    }
-}
-
-function Ensure-RealDirectory {
+function Ensure-TrustedProjectDirectory {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    if (Test-Path -LiteralPath $Path) {
-        Assert-RealDirectory -Path $Path -Purpose 'Project directory'
-        return
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $Path -ExpectedType Directory -AllowMissing)
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        [void][System.IO.Directory]::CreateDirectory($Path)
     }
-    [void][System.IO.Directory]::CreateDirectory($Path)
-    Assert-RealDirectory -Path $Path -Purpose 'New project directory'
-}
-
-function Assert-PinnedFile {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][object]$FilePin
-    )
-
-    $resolved = Assert-RegularFile -Path $Path -Purpose $FilePin.name
-    $item = Get-Item -LiteralPath $resolved -Force
-    if ($item.Length -ne [int64]$FilePin.size_bytes) {
-        throw "Pinned size mismatch: $resolved"
-    }
-    $actual = Get-FileSha256 -Path $resolved
-    if ($actual -ne ([string]$FilePin.sha256).ToLowerInvariant()) {
-        throw "Pinned SHA-256 mismatch: $resolved"
-    }
-    return $resolved
-}
-
-function Assert-PinnedRuntimeSurface {
-    param(
-        [Parameter(Mandatory = $true)][string]$RuntimeRoot,
-        [Parameter(Mandatory = $true)][object]$Pin
-    )
-
-    Assert-RealDirectory -Path $RuntimeRoot -Purpose 'Pinned runtime root'
-    $rootItems = @(Get-ChildItem -LiteralPath $RuntimeRoot -Force)
-    if ($rootItems.Count -ne 1 -or $rootItems[0].Name -cne 'bin' -or -not $rootItems[0].PSIsContainer -or ($rootItems[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "Pinned runtime root surface must contain exactly one real bin directory: $RuntimeRoot"
-    }
-
-    $binPath = Join-Path $RuntimeRoot 'bin'
-    $required = @($Pin.installation_policy.installed_files)
-    $actualItems = @(Get-ChildItem -LiteralPath $binPath -Force)
-    $actualNames = @($actualItems | ForEach-Object { $_.Name })
-    $exactNames = $actualNames.Count -eq $required.Count
-    if ($exactNames) {
-        foreach ($requiredName in $required) {
-            if (-not ($actualNames -ccontains $requiredName)) {
-                $exactNames = $false
-                break
-            }
-        }
-    }
-    $nonFiles = @($actualItems | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
-    if (-not $exactNames -or $nonFiles.Count -ne 0) {
-        throw "Pinned runtime bin surface differs from installation_policy.installed_files: $binPath"
-    }
-
-    foreach ($name in $required) {
-        $filePin = $Pin.files | Where-Object { $_.name -ceq $name -and $_.policy.disposition -eq 'required' } | Select-Object -First 1
-        if ($null -eq $filePin) {
-            throw "Required runtime file '$name' has no required provenance record."
-        }
-        [void](Assert-PinnedFile -Path (Join-Path $binPath $name) -FilePin $filePin)
-    }
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $Path -ExpectedType Directory)
 }
 
 function Assert-EffectiveConfig {
@@ -341,28 +268,29 @@ if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$validationModulePath = Join-Path (Join-Path $repoRoot 'lib') 'HelloApproval.Validation.psm1'
+if (-not (Test-Path -LiteralPath $validationModulePath -PathType Leaf)) {
+    throw "Shared validation module is missing: $validationModulePath"
+}
+Import-Module $validationModulePath -Force -ErrorAction Stop
+
 $pinPath = Join-Path $repoRoot 'provenance\sshenc-v0.6.101.json'
 $sourceLauncher = Join-Path $PSScriptRoot 'Start-HelloApprovalAgent.ps1'
 $pin = Get-Content -LiteralPath $pinPath -Raw | ConvertFrom-Json
-if ($pin.schema -ne 'hello-approval/upstream-pin/v1') {
-    throw "Unsupported provenance pin schema: $($pin.schema)"
-}
+[void](Assert-HelloApprovalPinPolicy -Pin $pin)
+
 if ($pin.installation_policy.target_architecture -ne 'x86_64-pc-windows-msvc') {
     throw "Unsupported pinned target architecture: $($pin.installation_policy.target_architecture)"
 }
 if ($pin.installation_policy.allowed_distribution -ne 'zip-manual-placement') {
     throw "Unsupported pinned distribution policy: $($pin.installation_policy.allowed_distribution)"
 }
-$requiredByPolicy = @($pin.files | Where-Object { $_.policy.disposition -eq 'required' } | ForEach-Object { $_.name } | Sort-Object)
-$installedByPolicy = @($pin.installation_policy.installed_files | Sort-Object)
-if (@(Compare-Object -ReferenceObject $requiredByPolicy -DifferenceObject $installedByPolicy -CaseSensitive).Count -ne 0) {
-    throw 'Pin inconsistency: installed_files must exactly match files with policy.disposition=required.'
-}
 
 $releaseTag = [string]$pin.upstream.release_tag
-$runtimeRoot = Join-Path $env:LOCALAPPDATA ("hello-approval\runtime\sshenc\{0}" -f $releaseTag)
-$runtimeBin = Join-Path $runtimeRoot 'bin'
-Assert-PinnedRuntimeSurface -RuntimeRoot $runtimeRoot -Pin $pin
+$runtimeBase = Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA 'hello-approval') 'runtime') 'sshenc'
+$runtimeRoot = Join-Path $runtimeBase $releaseTag
+$runtimeValidation = Assert-HelloApprovalPinnedRuntime -RuntimeRoot $runtimeRoot -Pin $pin -TrustedBase $env:LOCALAPPDATA
+$runtimeBin = $runtimeValidation.BinPath
 $sshencPath = Assert-RegularFile -Path (Join-Path $runtimeBin 'sshenc.exe') -Purpose 'Pinned sshenc.exe'
 $agentPath = Assert-RegularFile -Path (Join-Path $runtimeBin 'sshenc-agent.exe') -Purpose 'Pinned sshenc-agent.exe'
 
@@ -392,15 +320,14 @@ if ($null -ne $existingTask) {
     $wasRunning = $existingTask.State -eq 'Running'
 }
 
-Assert-RealDirectory -Path $projectRoot -Purpose 'hello-approval project root'
+[void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $projectRoot -ExpectedType Directory)
 foreach ($existingParent in @($appRoot, $launcherRoot)) {
-    if (Test-Path -LiteralPath $existingParent) {
-        Assert-RealDirectory -Path $existingParent -Purpose 'Existing launcher parent directory'
-    }
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $existingParent -ExpectedType Directory -AllowMissing)
 }
 
+[void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $launcherVersionRoot -ExpectedType Directory -AllowMissing)
 if (Test-Path -LiteralPath $launcherVersionRoot) {
-    Assert-RealDirectory -Path $launcherVersionRoot -Purpose 'Installed launcher digest directory'
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $launcherVersionRoot -ExpectedType Directory)
     $items = @(Get-ChildItem -LiteralPath $launcherVersionRoot -Force)
     if ($items.Count -ne 1 -or $items[0].Name -cne 'Start-HelloApprovalAgent.ps1' -or $items[0].PSIsContainer -or ($items[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw "Installed launcher digest surface is not exact: $launcherVersionRoot"
@@ -410,19 +337,22 @@ if (Test-Path -LiteralPath $launcherVersionRoot) {
         throw "Installed launcher digest path contains mismatched bytes: $installedLauncher"
     }
 } elseif ($PSCmdlet.ShouldProcess($launcherVersionRoot, 'Install content-addressed HA-1.2 launcher')) {
-    Ensure-RealDirectory -Path $projectRoot
-    Ensure-RealDirectory -Path $appRoot
-    Ensure-RealDirectory -Path $launcherRoot
+    Ensure-TrustedProjectDirectory -Path $projectRoot
+    Ensure-TrustedProjectDirectory -Path $appRoot
+    Ensure-TrustedProjectDirectory -Path $launcherRoot
     $stagingRoot = Join-Path $launcherRoot ('.staging.{0}' -f [Guid]::NewGuid().ToString('N'))
     try {
         [void][System.IO.Directory]::CreateDirectory($stagingRoot)
+        [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $stagingRoot -ExpectedType Directory)
         $stagingLauncher = Join-Path $stagingRoot 'Start-HelloApprovalAgent.ps1'
         [System.IO.File]::Copy($sourceLauncher, $stagingLauncher, $false)
         $stagedHash = Get-FileSha256 -Path $stagingLauncher
         if ($stagedHash -ne $launcherHash) {
             throw 'Staged launcher hash mismatch.'
         }
+        [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $launcherVersionRoot -ExpectedType Directory -AllowMissing)
         [System.IO.Directory]::Move($stagingRoot, $launcherVersionRoot)
+        [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $launcherVersionRoot -ExpectedType Directory)
     } catch {
         if (Test-Path -LiteralPath $stagingRoot) {
             Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
