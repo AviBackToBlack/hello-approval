@@ -302,12 +302,21 @@ $configPath = Assert-RegularFile -Path $configOutput[0] -Purpose 'sshenc config'
 Assert-EffectiveConfig -SshencPath $sshencPath
 
 $sourceLauncher = Assert-RegularFile -Path $sourceLauncher -Purpose 'Repository HA-1.2 launcher'
+$sourceValidationModule = Assert-RegularFile -Path $validationModulePath -Purpose 'Repository hello-approval validation module'
 $launcherHash = Get-FileSha256 -Path $sourceLauncher
+$validationModuleHash = Get-FileSha256 -Path $sourceValidationModule
+$launcherSource = Get-Content -LiteralPath $sourceLauncher -Raw
+$validationPinMatches = [regex]::Matches($launcherSource, "(?m)^\$ValidationModuleSha256 = '([a-f0-9]{64})'$")
+if ($validationPinMatches.Count -ne 1 -or $validationPinMatches[0].Groups[1].Value -cne $validationModuleHash) {
+    throw 'Repository launcher validation-module SHA-256 pin does not match lib/HelloApproval.Validation.psm1.'
+}
+
 $projectRoot = Join-Path $env:LOCALAPPDATA 'hello-approval'
 $appRoot = Join-Path $projectRoot 'app'
 $launcherRoot = Join-Path $appRoot 'launcher'
 $launcherVersionRoot = Join-Path $launcherRoot $launcherHash
 $installedLauncher = Join-Path $launcherVersionRoot 'Start-HelloApprovalAgent.ps1'
+$installedValidationModule = Join-Path $launcherVersionRoot 'HelloApproval.Validation.psm1'
 
 # Detect a same-name foreign task before making any hello-approval filesystem mutation.
 $existingTask = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
@@ -329,12 +338,18 @@ foreach ($existingParent in @($appRoot, $launcherRoot)) {
 if (Test-Path -LiteralPath $launcherVersionRoot) {
     [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $launcherVersionRoot -ExpectedType Directory)
     $items = @(Get-ChildItem -LiteralPath $launcherVersionRoot -Force)
-    if ($items.Count -ne 1 -or $items[0].Name -cne 'Start-HelloApprovalAgent.ps1' -or $items[0].PSIsContainer -or ($items[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "Installed launcher digest surface is not exact: $launcherVersionRoot"
+    $names = @($items | ForEach-Object { $_.Name })
+    $nonFiles = @($items | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
+    if ($items.Count -ne 2 -or
+        -not ($names -ccontains 'Start-HelloApprovalAgent.ps1') -or
+        -not ($names -ccontains 'HelloApproval.Validation.psm1') -or
+        $nonFiles.Count -ne 0) {
+        throw "Installed launcher bundle surface is not exact: $launcherVersionRoot"
     }
     $existingHash = Get-FileSha256 -Path $installedLauncher
-    if ($existingHash -ne $launcherHash) {
-        throw "Installed launcher digest path contains mismatched bytes: $installedLauncher"
+    $existingModuleHash = Get-FileSha256 -Path $installedValidationModule
+    if ($existingHash -cne $launcherHash -or $existingModuleHash -cne $validationModuleHash) {
+        throw "Installed launcher bundle contains mismatched bytes: $launcherVersionRoot"
     }
 } elseif ($PSCmdlet.ShouldProcess($launcherVersionRoot, 'Install content-addressed HA-1.2 launcher')) {
     Ensure-TrustedProjectDirectory -Path $projectRoot
@@ -345,10 +360,13 @@ if (Test-Path -LiteralPath $launcherVersionRoot) {
         [void][System.IO.Directory]::CreateDirectory($stagingRoot)
         [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $stagingRoot -ExpectedType Directory)
         $stagingLauncher = Join-Path $stagingRoot 'Start-HelloApprovalAgent.ps1'
+        $stagingValidationModule = Join-Path $stagingRoot 'HelloApproval.Validation.psm1'
         [System.IO.File]::Copy($sourceLauncher, $stagingLauncher, $false)
+        [System.IO.File]::Copy($sourceValidationModule, $stagingValidationModule, $false)
         $stagedHash = Get-FileSha256 -Path $stagingLauncher
-        if ($stagedHash -ne $launcherHash) {
-            throw 'Staged launcher hash mismatch.'
+        $stagedModuleHash = Get-FileSha256 -Path $stagingValidationModule
+        if ($stagedHash -cne $launcherHash -or $stagedModuleHash -cne $validationModuleHash) {
+            throw 'Staged launcher bundle hash mismatch.'
         }
         [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $launcherVersionRoot -ExpectedType Directory -AllowMissing)
         [System.IO.Directory]::Move($stagingRoot, $launcherVersionRoot)

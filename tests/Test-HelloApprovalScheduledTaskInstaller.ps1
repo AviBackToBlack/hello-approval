@@ -340,6 +340,8 @@ try {
         $launcherHash = Get-FileSha256Local -Path $sourceLauncher
         $launcherVersionRoot = Join-Path $launcherRoot $launcherHash
         $installedLauncher = Join-Path $launcherVersionRoot 'Start-HelloApprovalAgent.ps1'
+        $installedValidationModule = Join-Path $launcherVersionRoot 'HelloApproval.Validation.psm1'
+        $validationModuleHash = Get-FileSha256Local -Path $sourceModule
         $launcherItems = @(if (Test-Path -LiteralPath $launcherVersionRoot -PathType Container) {
             Get-ChildItem -LiteralPath $launcherVersionRoot -Force
         })
@@ -348,12 +350,15 @@ try {
         })
         $taskAfterBoundary = Get-ScheduledTask -TaskName $taskName -TaskPath ([string][char]92) -ErrorAction SilentlyContinue
 
+        $launcherNames = @($launcherItems | ForEach-Object { $_.Name })
+        $launcherNonFiles = @($launcherItems | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
         $launcherExact = (
-            $launcherItems.Count -eq 1 -and
-            $launcherItems[0].Name -ceq 'Start-HelloApprovalAgent.ps1' -and
-            -not $launcherItems[0].PSIsContainer -and
-            -not ($launcherItems[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -and
-            (Get-FileSha256Local -Path $installedLauncher) -ceq $launcherHash
+            $launcherItems.Count -eq 2 -and
+            ($launcherNames -ccontains 'Start-HelloApprovalAgent.ps1') -and
+            ($launcherNames -ccontains 'HelloApproval.Validation.psm1') -and
+            $launcherNonFiles.Count -eq 0 -and
+            (Get-FileSha256Local -Path $installedLauncher) -ceq $launcherHash -and
+            (Get-FileSha256Local -Path $installedValidationModule) -ceq $validationModuleHash
         )
 
         if ($boundary.ExceptionMessage -ceq $boundary.Sentinel -and

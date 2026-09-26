@@ -18,6 +18,20 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+$ValidationModuleSha256 = '1b790cb30fa19ca7f73fdd511573d9a3b3d66b98a677309d33dcbc3db7949d1c'
+
+function Get-BootstrapFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
+}
 
 function Resolve-ExistingRegularFile {
     param(
@@ -119,10 +133,17 @@ try {
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
         throw 'LOCALAPPDATA is not available.'
     }
-    $repoRoot = Split-Path -Parent $PSScriptRoot
-    $validationModulePath = Join-Path (Join-Path $repoRoot 'lib') 'HelloApproval.Validation.psm1'
-    if (-not (Test-Path -LiteralPath $validationModulePath -PathType Leaf)) {
-        throw "Shared validation module is missing: $validationModulePath"
+    $installedModuleCandidate = Join-Path $PSScriptRoot 'HelloApproval.Validation.psm1'
+    $sourceModuleCandidate = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'lib') 'HelloApproval.Validation.psm1'
+    $validationModulePath = if (Test-Path -LiteralPath $installedModuleCandidate -PathType Leaf) {
+        $installedModuleCandidate
+    } else {
+        $sourceModuleCandidate
+    }
+    $validationModulePath = Resolve-ExistingRegularFile -Path $validationModulePath -Purpose 'hello-approval validation module'
+    $validationModuleHash = Get-BootstrapFileSha256 -Path $validationModulePath
+    if ($validationModuleHash -cne $ValidationModuleSha256) {
+        throw "hello-approval validation module SHA-256 mismatch: $validationModulePath"
     }
     Import-Module $validationModulePath -Force -ErrorAction Stop
 

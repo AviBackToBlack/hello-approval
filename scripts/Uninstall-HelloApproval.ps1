@@ -231,18 +231,41 @@ function Assert-LauncherCacheSurface {
     Assert-RealDirectory -Path $LauncherRoot -Purpose 'hello-approval launcher cache'
 
     foreach ($entry in @(Get-ChildItem -LiteralPath $LauncherRoot -Force)) {
-        if (-not $entry.PSIsContainer -or ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $entry.Name -notmatch '\A[a-f0-9]{64}\z') {
+        if (-not $entry.PSIsContainer -or ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $entry.Name -notmatch 'A[a-f0-9]{64}z') {
             throw "Refusing launcher-cache removal: unexpected cache entry: $($entry.FullName)"
         }
 
         $children = @(Get-ChildItem -LiteralPath $entry.FullName -Force)
-        if ($children.Count -ne 1 -or $children[0].PSIsContainer -or $children[0].Name -cne 'Start-HelloApprovalAgent.ps1' -or ($children[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw "Refusing launcher-cache removal: digest directory surface is not exact: $($entry.FullName)"
+        $names = @($children | ForEach-Object { $_.Name })
+        $nonFiles = @($children | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
+        if ($nonFiles.Count -ne 0 -or
+            -not ($names -ccontains 'Start-HelloApprovalAgent.ps1') -or
+            ($children.Count -ne 1 -and $children.Count -ne 2)) {
+            throw "Refusing launcher-cache removal: digest directory surface is not recognized: $($entry.FullName)"
         }
 
-        $hash = Get-FileSha256 -Path $children[0].FullName
-        if ($hash -cne $entry.Name) {
+        $launcherPath = Join-Path $entry.FullName 'Start-HelloApprovalAgent.ps1'
+        $launcherHash = Get-FileSha256 -Path $launcherPath
+        if ($launcherHash -cne $entry.Name) {
             throw "Refusing launcher-cache removal: launcher bytes do not match digest directory: $($entry.FullName)"
+        }
+
+        if ($children.Count -eq 2) {
+            if (-not ($names -ccontains 'HelloApproval.Validation.psm1')) {
+                throw "Refusing launcher-cache removal: v2 launcher bundle has an unexpected second file: $($entry.FullName)"
+            }
+
+            $launcherSource = Get-Content -LiteralPath $launcherPath -Raw
+            $pinMatches = [regex]::Matches($launcherSource, "(?m)^\$ValidationModuleSha256 = '([a-f0-9]{64})'$")
+            if ($pinMatches.Count -ne 1) {
+                throw "Refusing launcher-cache removal: v2 launcher does not contain exactly one validation-module SHA-256 pin: $launcherPath"
+            }
+
+            $modulePath = Join-Path $entry.FullName 'HelloApproval.Validation.psm1'
+            $moduleHash = Get-FileSha256 -Path $modulePath
+            if ($moduleHash -cne $pinMatches[0].Groups[1].Value) {
+                throw "Refusing launcher-cache removal: validation module does not match launcher pin: $modulePath"
+            }
         }
     }
 }

@@ -190,6 +190,35 @@ try {
         Fail 'nested project log path launches synthetic agent and writes validated logs' ("rc={0} output={1}" -f $normal.ExitCode,($normal.Output -join ' | '))
     }
 
+    # Production-style standalone bundle: launcher and pinned validation module
+    # are siblings under the content-addressed cache directory.
+    $bundle = Join-Path $root 'installed-bundle'
+    [void][IO.Directory]::CreateDirectory($bundle)
+    $bundledLauncher = Join-Path $bundle 'Start-HelloApprovalAgent.ps1'
+    $bundledModule = Join-Path $bundle 'HelloApproval.Validation.psm1'
+    Copy-Item -LiteralPath $sourceLauncher -Destination $bundledLauncher -Force
+    Copy-Item -LiteralPath $sourceModule -Destination $bundledModule -Force
+
+    $bundleLocal = Join-Path $root 'bundle-local'
+    $bundleLogs = Join-Path (Join-Path $bundleLocal 'hello-approval') 'logs'
+    $bundleResult = Invoke-Launcher -Launcher $bundledLauncher -Agent $agent -Config $config -LocalAppData $bundleLocal -LogDirectory $bundleLogs
+    if ($bundleResult.ExitCode -eq 0 -and
+        (Test-Path -LiteralPath (Join-Path $bundleLogs 'launcher.log') -PathType Leaf)) {
+        Pass 'standalone two-file launcher bundle resolves pinned sibling validation module'
+    } else {
+        Fail 'standalone two-file launcher bundle resolves pinned sibling validation module' ("rc={0} output={1}" -f $bundleResult.ExitCode,($bundleResult.Output -join ' | '))
+    }
+
+    [IO.File]::AppendAllText($bundledModule,[Environment]::NewLine + '# tampered')
+    $tamperedLocal = Join-Path $root 'tampered-bundle-local'
+    $tamperedLogs = Join-Path (Join-Path $tamperedLocal 'hello-approval') 'logs'
+    $tamperedResult = Invoke-Launcher -Launcher $bundledLauncher -Agent $agent -Config $config -LocalAppData $tamperedLocal -LogDirectory $tamperedLogs
+    if ($tamperedResult.ExitCode -eq 125 -and (($tamperedResult.Output -join ' | ') -match 'validation module SHA-256 mismatch')) {
+        Pass 'standalone launcher rejects tampered sibling validation module before import'
+    } else {
+        Fail 'standalone launcher rejects tampered sibling validation module before import' ("rc={0} output={1}" -f $tamperedResult.ExitCode,($tamperedResult.Output -join ' | '))
+    }
+
     $equalLocal = Join-Path $root 'equal-local'
     $equalProject = Join-Path $equalLocal 'hello-approval'
     $equal = Invoke-Launcher -Launcher $launcher -Agent $agent -Config $config -LocalAppData $equalLocal -LogDirectory $equalProject
