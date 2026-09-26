@@ -340,16 +340,12 @@ try {
         $launcherHash = Get-FileSha256Local -Path $sourceLauncher
         $launcherVersionRoot = Join-Path $launcherRoot $launcherHash
         $installedLauncher = Join-Path $launcherVersionRoot 'Start-HelloApprovalAgent.ps1'
-        $launcherItems = if (Test-Path -LiteralPath $launcherVersionRoot -PathType Container) {
-            @(Get-ChildItem -LiteralPath $launcherVersionRoot -Force)
-        } else {
-            @()
-        }
-        $stagingItems = if (Test-Path -LiteralPath $launcherRoot -PathType Container) {
-            @(Get-ChildItem -LiteralPath $launcherRoot -Force | Where-Object { $_.Name -like '.staging.*' })
-        } else {
-            @()
-        }
+        $launcherItems = @(if (Test-Path -LiteralPath $launcherVersionRoot -PathType Container) {
+            Get-ChildItem -LiteralPath $launcherVersionRoot -Force
+        })
+        $stagingItems = @(if (Test-Path -LiteralPath $launcherRoot -PathType Container) {
+            Get-ChildItem -LiteralPath $launcherRoot -Force | Where-Object { $_.Name -like '.staging.*' }
+        })
         $taskAfterBoundary = Get-ScheduledTask -TaskName $taskName -TaskPath ([string][char]92) -ErrorAction SilentlyContinue
 
         $launcherExact = (
