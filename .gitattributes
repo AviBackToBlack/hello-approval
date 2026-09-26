@@ -1,0 +1,3 @@
+# Hash-bearing launcher bundle artifacts must have checkout-stable bytes.
+lib/HelloApproval.Validation.psm1 text eol=lf
+scripts/Start-HelloApprovalAgent.ps1 text eol=lf
