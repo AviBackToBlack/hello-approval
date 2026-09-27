@@ -202,8 +202,21 @@ function Invoke-Doctor {
             $ErrorActionPreference=$saved
         }
 
-        $json=($out -join [Environment]::NewLine) | ConvertFrom-Json
-        return [pscustomobject]@{ExitCode=$rc;Json=$json;Raw=@($out)}
+        $jsonStart = -1
+        $jsonEnd = -1
+        for($i=0; $i -lt $out.Count; $i++){
+            if($jsonStart -lt 0 -and $out[$i].TrimStart().StartsWith('{')){ $jsonStart=$i }
+            if($out[$i].TrimEnd().EndsWith('}')){ $jsonEnd=$i }
+        }
+        if($jsonStart -lt 0 -or $jsonEnd -lt $jsonStart){
+            throw "Doctor JSON object was not found in stdout: $($out -join ' | ')"
+        }
+        $jsonText = @($out[$jsonStart..$jsonEnd]) -join [Environment]::NewLine
+        $json = $jsonText | ConvertFrom-Json
+        $noise = @()
+        if($jsonStart -gt 0){ $noise += @($out[0..($jsonStart-1)]) }
+        if($jsonEnd -lt ($out.Count-1)){ $noise += @($out[($jsonEnd+1)..($out.Count-1)]) }
+        return [pscustomobject]@{ExitCode=$rc;Json=$json;Raw=@($out);Noise=@($noise)}
     } finally {
         $env:LOCALAPPDATA=$oldLocal
         $env:APPDATA=$oldApp
