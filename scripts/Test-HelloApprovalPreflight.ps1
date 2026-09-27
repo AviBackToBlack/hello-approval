@@ -78,38 +78,39 @@ try {
     }
 
     $repoRoot = Split-Path -Parent $PSScriptRoot
-    $pinPath = Join-Path $repoRoot 'provenance\sshenc-v0.6.101.json'
+    $validationModulePath = Join-Path (Join-Path $repoRoot 'lib') 'HelloApproval.Validation.psm1'
+    if (-not (Test-Path -LiteralPath $validationModulePath -PathType Leaf)) {
+        Add-Finding -Severity 'BLOCK' -Check 'validation.module' -Message 'Shared validation module is missing.' -Value $validationModulePath
+        throw 'Shared validation module is missing.'
+    }
+    try {
+        Import-Module $validationModulePath -Force -ErrorAction Stop
+    } catch {
+        Add-Finding -Severity 'BLOCK' -Check 'validation.module' -Message 'Could not import the shared validation module.' -Value $_.Exception.Message
+        throw
+    }
+
+    $pinPath = Join-Path (Join-Path $repoRoot 'provenance') 'sshenc-v0.6.101.json'
     if (-not (Test-Path -LiteralPath $pinPath -PathType Leaf)) {
         Add-Finding -Severity 'BLOCK' -Check 'pin.present' -Message 'Pinned provenance JSON is missing.' -Value $pinPath
         throw 'Pinned provenance JSON is missing.'
     }
 
     $pin = Get-Content -LiteralPath $pinPath -Raw | ConvertFrom-Json
-    if ($pin.schema -ne 'hello-approval/upstream-pin/v1') {
-        Add-Finding -Severity 'BLOCK' -Check 'pin.schema' -Message 'Unexpected provenance pin schema.' -Value $pin.schema
-        throw 'Unsupported provenance pin schema.'
-    } else {
+    try {
+        [void](Assert-HelloApprovalPinPolicy -Pin $pin)
         Add-Finding -Severity 'PASS' -Check 'pin.schema' -Message 'Provenance pin schema is supported.' -Value $pin.schema
+        Add-Finding -Severity 'PASS' -Check 'pin.policy.disposition' -Message 'All file dispositions are within the v1 policy enum.'
+        Add-Finding -Severity 'PASS' -Check 'pin.policy.installed-files' -Message 'Pin required-file policy matches installed_files exactly.'
+    } catch {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.policy.validation' -Message 'Provenance pin policy failed shared validation.' -Value $_.Exception.Message
+        throw 'Provenance pin policy validation failed.'
     }
+
     if ($pin.installation_policy.allowed_distribution -ne 'zip-manual-placement') {
         Add-Finding -Severity 'BLOCK' -Check 'pin.policy.distribution' -Message 'Pin distribution policy is incompatible with the HA-1.1 installer.' -Value $pin.installation_policy.allowed_distribution
     } else {
         Add-Finding -Severity 'PASS' -Check 'pin.policy.distribution' -Message 'Pin distribution policy matches the inert ZIP installer.' -Value $pin.installation_policy.allowed_distribution
-    }
-
-    $validDispositions = @('required', 'unused', 'excluded')
-    $invalidDispositions = @($pin.files | Where-Object { $validDispositions -notcontains $_.policy.disposition } | ForEach-Object { $_.name })
-    if ($invalidDispositions.Count -gt 0) {
-        Add-Finding -Severity 'BLOCK' -Check 'pin.policy.disposition' -Message 'Pin contains unsupported policy dispositions.' -Value ($invalidDispositions -join ', ')
-    } else {
-        Add-Finding -Severity 'PASS' -Check 'pin.policy.disposition' -Message 'All file dispositions are within the v1 policy enum.'
-    }
-    $requiredByPolicy = @($pin.files | Where-Object { $_.policy.disposition -eq 'required' } | ForEach-Object { $_.name } | Sort-Object)
-    $installedByPolicy = @($pin.installation_policy.installed_files | Sort-Object)
-    if (@(Compare-Object -ReferenceObject $requiredByPolicy -DifferenceObject $installedByPolicy).Count -gt 0) {
-        Add-Finding -Severity 'BLOCK' -Check 'pin.policy.installed-files' -Message 'Pin installed_files does not exactly match files with disposition=required.' -Value ([pscustomobject]@{ required = $requiredByPolicy; installed = $installedByPolicy })
-    } else {
-        Add-Finding -Severity 'PASS' -Check 'pin.policy.installed-files' -Message 'Pin required-file policy matches installed_files exactly.'
     }
 
     $releaseTag = [string]$pin.upstream.release_tag
@@ -127,60 +128,18 @@ try {
     Add-Finding -Severity 'INFO' -Check 'runtime.root' -Message 'Expected pinned runtime root.' -Value $runtimeRoot
     Add-Finding -Severity 'INFO' -Check 'agent.pipe' -Message 'Expected dedicated signing pipe.' -Value $expectedPipe
 
-    $requiredFiles = @($pin.installation_policy.installed_files)
     $runtimeVerified = $false
     if (Test-Path -LiteralPath $runtimeRoot) {
-        $runtimeProblems = 0
-        $runtimeRootItem = Get-Item -LiteralPath $runtimeRoot -Force
-        if (-not (Test-Path -LiteralPath $runtimeRoot -PathType Container) -or ($runtimeRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            $runtimeProblems++
-            Add-Finding -Severity 'BLOCK' -Check 'runtime.root.surface' -Message 'Pinned runtime root must be a real directory, not a reparse point.' -Value $runtimeRoot
-        } else {
-            $rootItems = @(Get-ChildItem -LiteralPath $runtimeRoot -Force)
-            $rootValid = $rootItems.Count -eq 1 -and $rootItems[0].Name -eq 'bin' -and $rootItems[0].PSIsContainer -and -not ($rootItems[0].Attributes -band [IO.FileAttributes]::ReparsePoint)
-            if (-not $rootValid) {
-                $runtimeProblems++
-                Add-Finding -Severity 'BLOCK' -Check 'runtime.root.surface' -Message 'Pinned runtime root must contain exactly one bin directory and no other entries.' -Value (@($rootItems | ForEach-Object { $_.Name }) -join ', ')
+        try {
+            $runtimeValidation = Assert-HelloApprovalPinnedRuntime -RuntimeRoot $runtimeRoot -Pin $pin -TrustedBase $env:LOCALAPPDATA
+            $runtimeBin = $runtimeValidation.BinPath
+            foreach ($name in @($runtimeValidation.InstalledFiles)) {
+                Add-Finding -Severity 'PASS' -Check "runtime.$name" -Message 'Existing runtime file matches the provenance pin.' -Value (Join-Path $runtimeBin $name)
             }
-
-            if (-not (Test-Path -LiteralPath $runtimeBin -PathType Container)) {
-                $runtimeProblems++
-                Add-Finding -Severity 'BLOCK' -Check 'runtime.surface' -Message 'Pinned runtime root exists but bin directory is missing or not a directory.' -Value $runtimeBin
-            } else {
-                $actualItems = @(Get-ChildItem -LiteralPath $runtimeBin -Force)
-                $actualNames = @($actualItems | ForEach-Object { $_.Name })
-                $nameDiff = @(Compare-Object -ReferenceObject ($requiredFiles | Sort-Object) -DifferenceObject ($actualNames | Sort-Object))
-                $nonFiles = @($actualItems | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
-                if ($nameDiff.Count -ne 0 -or $nonFiles.Count -ne 0) {
-                    $runtimeProblems++
-                    Add-Finding -Severity 'BLOCK' -Check 'runtime.surface' -Message 'Runtime bin surface differs from the exact approved regular-file set.' -Value ($actualNames -join ', ')
-                }
-
-                foreach ($name in $requiredFiles) {
-                    $path = Join-Path $runtimeBin $name
-                    $filePin = $pin.files | Where-Object { $_.name -eq $name } | Select-Object -First 1
-                    if ($null -eq $filePin) {
-                        $runtimeProblems++
-                        Add-Finding -Severity 'BLOCK' -Check "runtime.$name" -Message 'Required runtime file is missing from provenance pin.'
-                        continue
-                    }
-                    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-                        $runtimeProblems++
-                        Add-Finding -Severity 'BLOCK' -Check "runtime.$name" -Message 'Pinned runtime directory exists but a required regular file is missing.' -Value $path
-                        continue
-                    }
-                    $item = Get-Item -LiteralPath $path -Force
-                    $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
-                    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or ($item.Length -ne [int64]$filePin.size_bytes) -or ($hash -ne ([string]$filePin.sha256).ToLowerInvariant())) {
-                        $runtimeProblems++
-                        Add-Finding -Severity 'BLOCK' -Check "runtime.$name" -Message 'Existing runtime file is redirected or does not match the provenance pin.' -Value $path
-                    } else {
-                        Add-Finding -Severity 'PASS' -Check "runtime.$name" -Message 'Existing runtime file matches the provenance pin.' -Value $path
-                    }
-                }
-            }
+            $runtimeVerified = $true
+        } catch {
+            Add-Finding -Severity 'BLOCK' -Check 'runtime.surface' -Message 'Existing pinned runtime failed shared validation.' -Value $_.Exception.Message
         }
-        $runtimeVerified = ($runtimeProblems -eq 0)
     } else {
         Add-Finding -Severity 'INFO' -Check 'runtime.surface' -Message 'Pinned runtime is not installed yet.' -Value $runtimeRoot
     }
