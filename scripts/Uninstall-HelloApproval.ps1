@@ -236,6 +236,7 @@ $signingConfigGit = $signingConfig -replace '\\','/'
 $verificationConfigGit = $verificationConfig -replace '\\','/'
 
 # Ownership/shape validation happens before any mutation.
+[void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $gitRoot -ExpectedType Directory -AllowMissing)
 Assert-OwnedGitFile -Git $git -Path $signingConfig -ExpectedSchema $SigningSchema -Purpose 'hello-approval signing Git fragment'
 Assert-OwnedGitFile -Git $git -Path $verificationConfig -ExpectedSchema $VerificationSchema -Purpose 'hello-approval verification Git fragment'
 Assert-OwnedTrustFile -Path $trustFile

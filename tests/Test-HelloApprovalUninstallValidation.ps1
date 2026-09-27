@@ -184,17 +184,18 @@ function New-Fixture {
     }
 
 
-    if($IncludeOwnedGit){
-        if($GitRootThroughJunction){
-            $gitLogical = Join-Path $physicalProject 'git'
-            $gitTarget = Join-Path $Root 'git-redirect'
-            New-Junction -Link $gitLogical -Target $gitTarget
-            $gitRootPhysical = $gitTarget
-        } else {
-            $gitRootPhysical = Join-Path $physicalProject 'git'
-            [void][IO.Directory]::CreateDirectory($gitRootPhysical)
-        }
+    $gitRootPhysical = $null
+    if($GitRootThroughJunction){
+        $gitLogical = Join-Path $physicalProject 'git'
+        $gitTarget = Join-Path $Root 'git-redirect'
+        New-Junction -Link $gitLogical -Target $gitTarget
+        $gitRootPhysical = $gitTarget
+    } elseif($IncludeOwnedGit){
+        $gitRootPhysical = Join-Path $physicalProject 'git'
+        [void][IO.Directory]::CreateDirectory($gitRootPhysical)
+    }
 
+    if($IncludeOwnedGit){
         $signingText = "[hello-approval]`r`n`tschema = hello-approval/ha-1.4/v1`r`n"
         $verificationText = "[hello-approval]`r`n`tschema = hello-approval/ha-1.5/v1`r`n"
         [IO.File]::WriteAllText((Join-Path $gitRootPhysical 'signing.gitconfig'),$signingText,[Text.UTF8Encoding]::new($false))
@@ -264,6 +265,8 @@ try {
     $cases = @(
         [pscustomobject]@{Name='exact owned Git/trust files';Args=@{IncludeOwnedGit=$true};Mode='default';Kind='accept'},
         [pscustomobject]@{Name='owned Git directory junction';Args=@{IncludeOwnedGit=$true;GitRootThroughJunction=$true};Mode='default';Kind='ancestry-delta'},
+        [pscustomobject]@{Name='absent owned Git files below project-root junction';Args=@{ProjectRootThroughJunction=$true};Mode='default';Kind='ancestry-delta'},
+        [pscustomobject]@{Name='absent owned Git files at Git-directory junction';Args=@{GitRootThroughJunction=$true};Mode='default';Kind='ancestry-delta'},
         [pscustomobject]@{Name='exact runtime';Args=@{};Mode='runtime';Kind='accept'},
         [pscustomobject]@{Name='missing runtime';Args=@{RuntimeMissing=$true};Mode='runtime';Kind='accept'},
         [pscustomobject]@{Name='missing validation module';Args=@{ValidationModuleMissing=$true};Mode='runtime';Kind='module-migration'},
