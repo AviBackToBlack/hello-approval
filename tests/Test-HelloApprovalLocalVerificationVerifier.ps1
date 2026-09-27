@@ -176,6 +176,8 @@ function New-UnsignedRepo {
     git init --template=$emptyTemplate $repo | Out-Null
     git -C $repo config user.name Synthetic
     git -C $repo config user.email synthetic@example.invalid
+    git -C $repo config gpg.format ssh
+    git -C $repo config gpg.ssh.allowedSignersFile (Join-Path $Root 'local\hello-approval\git\allowed_signers')
     [IO.File]::WriteAllText((Join-Path $repo 'poison.txt'),'routing poison',[Text.UTF8Encoding]::new($false))
     git -C $repo add poison.txt
     git -C $repo -c commit.gpgsign=false commit -m 'unsigned routing poison' | Out-Null
@@ -184,8 +186,9 @@ function New-UnsignedRepo {
 }
 
 function Invoke-Verifier {
-    param($Fixture)
+    param($Fixture,[string]$Repo)
 
+    if([string]::IsNullOrEmpty($Repo)){$Repo=$Fixture.Repo}
     $oldLocal=$env:LOCALAPPDATA
     $oldProfile=$env:USERPROFILE
     $oldHome=$env:HOME
@@ -207,7 +210,7 @@ function Invoke-Verifier {
         $saved=$ErrorActionPreference
         try {
             $ErrorActionPreference='Continue'
-            $out=@(& $ps51 -NoProfile -ExecutionPolicy Bypass -File $Fixture.Verifier -Repo $Fixture.Repo -Commit HEAD -ExpectedPrincipal $principal 2>&1 | ForEach-Object {[string]$_})
+            $out=@(& $ps51 -NoProfile -ExecutionPolicy Bypass -File $Fixture.Verifier -Repo $Repo -Commit HEAD -ExpectedPrincipal $principal 2>&1 | ForEach-Object {[string]$_})
             $rc=$LASTEXITCODE
         } finally {$ErrorActionPreference=$saved}
         return [pscustomobject]@{ExitCode=$rc;Output=@($out)}
@@ -297,6 +300,19 @@ try {
                 Pass 'explicit Repo remains authoritative with poisoned GIT_DIR'
             } else {
                 Fail 'explicit Repo remains authoritative with poisoned GIT_DIR' ("rc={0} output={1}" -f $poisonedGitDirResult.ExitCode,($poisonedGitDirResult.Output -join ' | '))
+            }
+
+            $oldGitDir=$env:GIT_DIR
+            try {
+                $env:GIT_DIR=Join-Path $fixture.Repo '.git'
+                $falsePassResult=Invoke-Verifier -Fixture $fixture -Repo $poisonRepo
+            } finally {
+                if($null -eq $oldGitDir){Remove-Item Env:GIT_DIR -ErrorAction SilentlyContinue}else{$env:GIT_DIR=$oldGitDir}
+            }
+            if($falsePassResult.ExitCode -ne 0 -and (($falsePassResult.Output -join ' | ') -notmatch 'HA-1.5 LOCAL VERIFICATION: PASS')){
+                Pass 'unsigned explicit Repo cannot PASS through signed victim GIT_DIR'
+            } else {
+                Fail 'unsigned explicit Repo cannot PASS through signed victim GIT_DIR' ("rc={0} output={1}" -f $falsePassResult.ExitCode,($falsePassResult.Output -join ' | '))
             }
 
             $oldGitWorkTree=$env:GIT_WORK_TREE
