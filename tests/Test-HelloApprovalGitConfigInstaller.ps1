@@ -167,8 +167,11 @@ function New-SyntheticFixture {
     }
 }
 
-function Invoke-InstallerWhatIf {
-    param($Fixture)
+function Invoke-Installer {
+    param(
+        $Fixture,
+        [switch]$WhatIf
+    )
 
     $oldLocal = $env:LOCALAPPDATA
     $oldProfile = $env:USERPROFILE
@@ -186,7 +189,9 @@ function Invoke-InstallerWhatIf {
         $saved = $ErrorActionPreference
         try {
             $ErrorActionPreference = 'Continue'
-            $output = @(& $ps51 -NoProfile -ExecutionPolicy Bypass -File $Fixture.Installer -WhatIf 2>&1 | ForEach-Object { [string]$_ })
+            $arguments = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$Fixture.Installer)
+            if ($WhatIf) { $arguments += '-WhatIf' }
+            $output = @(& $ps51 @arguments 2>&1 | ForEach-Object { [string]$_ })
             $rc = $LASTEXITCODE
         } finally {
             $ErrorActionPreference = $saved
@@ -210,15 +215,55 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-git-config-' + [Gu
 
 try {
     $exact = New-SyntheticFixture -Root (Join-Path $root 'exact')
-    $exactResult = Invoke-InstallerWhatIf -Fixture $exact
+    $exactResult = Invoke-Installer -Fixture $exact -WhatIf
     if ($exactResult.ExitCode -eq 0 -and -not (Test-Path -LiteralPath $exact.GlobalConfig)) {
         Pass 'exact fixture reaches Git config WhatIf gate without mutation'
     } else {
         Fail 'exact fixture reaches Git config WhatIf gate without mutation' ("rc={0} globalExists={1} output={2}" -f $exactResult.ExitCode,(Test-Path -LiteralPath $exact.GlobalConfig),($exactResult.Output -join ' | '))
     }
 
+    if (-not $ExpectedPhase1) {
+        $write = New-SyntheticFixture -Root (Join-Path $root 'write')
+        $writeFirst = Invoke-Installer -Fixture $write
+        $writeSecond = Invoke-Installer -Fixture $write
+
+        $ownedConfig = Join-Path (Join-Path (Join-Path $write.LocalAppData 'hello-approval') 'git') 'signing.gitconfig'
+        $runtimeProgram = Join-Path (Join-Path (Join-Path (Join-Path (Join-Path $write.LocalAppData 'hello-approval') 'runtime') 'sshenc') 'v-test') 'binsshenc.exe'
+        $publicKey = Join-Path (Join-Path $write.UserProfile '.ssh') 'github-signing.pub'
+        $expectedProgram = $runtimeProgram -replace '\','/'
+        $expectedKey = $publicKey -replace '\','/'
+        $expectedInclude = $ownedConfig -replace '\','/'
+
+        $schema = @(git config --file $ownedConfig --get-all hello-approval.schema)
+        $format = @(git config --file $ownedConfig --get-all gpg.format)
+        $program = @(git config --file $ownedConfig --get-all gpg.ssh.program)
+        $signingKey = @(git config --file $ownedConfig --get-all user.signingkey)
+        $includes = @(git config --file $write.GlobalConfig --get-all include.path)
+        $staging = @(Get-ChildItem -LiteralPath (Split-Path -Parent $ownedConfig) -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '.signing.gitconfig.staging.*' })
+
+        $writeOk = (
+            $writeFirst.ExitCode -eq 0 -and
+            $writeSecond.ExitCode -eq 0 -and
+            $schema.Count -eq 1 -and $schema[0] -ceq 'hello-approval/ha-1.4/v1' -and
+            $format.Count -eq 1 -and $format[0] -ceq 'ssh' -and
+            $program.Count -eq 1 -and $program[0] -ceq $expectedProgram -and
+            $signingKey.Count -eq 1 -and $signingKey[0] -ceq $expectedKey -and
+            $includes.Count -eq 1 -and (($includes[0] -replace '\','/') -ceq $expectedInclude) -and
+            $staging.Count -eq 0
+        )
+
+        if ($writeOk) {
+            Pass 'isolated Git config write path installs exact fragment/include and reruns idempotently'
+        } else {
+            Fail 'isolated Git config write path installs exact fragment/include and reruns idempotently' (
+                "first={0} second={1} schema={2} format={3} program={4} key={5} includes={6} staging={7} firstOutput={8} secondOutput={9}" -f
+                $writeFirst.ExitCode,$writeSecond.ExitCode,($schema -join ';'),($format -join ';'),($program -join ';'),($signingKey -join ';'),($includes -join ';'),$staging.Count,($writeFirst.Output -join ' | '),($writeSecond.Output -join ' | ')
+            )
+        }
+    }
+
     $runtimeJunction = New-SyntheticFixture -Root (Join-Path $root 'runtime-junction') -RuntimeThroughJunction
-    $runtimeResult = Invoke-InstallerWhatIf -Fixture $runtimeJunction
+    $runtimeResult = Invoke-Installer -Fixture $runtimeJunction -WhatIf
     if ($ExpectedPhase1) {
         if ($runtimeResult.ExitCode -eq 0) {
             Pass 'Phase1 baseline accepts runtime through intermediate junction'
@@ -234,7 +279,7 @@ try {
     }
 
     $keyJunction = New-SyntheticFixture -Root (Join-Path $root 'key-junction') -PublicKeyThroughJunction
-    $keyResult = Invoke-InstallerWhatIf -Fixture $keyJunction
+    $keyResult = Invoke-Installer -Fixture $keyJunction -WhatIf
     if ($ExpectedPhase1) {
         if ($keyResult.ExitCode -eq 0) {
             Pass 'Phase1 baseline accepts signing public key through .ssh junction'
@@ -250,7 +295,7 @@ try {
     }
 
     $badPin = New-SyntheticFixture -Root (Join-Path $root 'bad-pin') -UnknownUnusedDisposition
-    $badPinResult = Invoke-InstallerWhatIf -Fixture $badPin
+    $badPinResult = Invoke-Installer -Fixture $badPin -WhatIf
     if ($ExpectedPhase1) {
         if ($badPinResult.ExitCode -eq 0) {
             Pass 'Phase1 baseline accepts unknown disposition on unused pin record'
