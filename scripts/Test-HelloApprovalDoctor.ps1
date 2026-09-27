@@ -84,53 +84,6 @@ function Get-LfNormalizedFileSha256 {
     }
 }
 
-function Test-PinnedRuntimeFile {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)]$Pin,
-        [Parameter(Mandatory = $true)][string]$Name
-    )
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        Add-Finding -Severity 'BLOCK' -Check "runtime.$Name" -Message 'Pinned runtime file is missing.' -Value $Path
-        return $false
-    }
-
-    try {
-        $item = Get-Item -LiteralPath $Path -Force
-        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            Add-Finding -Severity 'BLOCK' -Check "runtime.$Name" -Message 'Pinned runtime executable must be a regular non-reparse file.' -Value $Path
-            return $false
-        }
-
-        $record = @($Pin.files | Where-Object { $_.name -ceq $Name -and $_.policy.disposition -eq 'required' })
-        if ($record.Count -ne 1) {
-            Add-Finding -Severity 'BLOCK' -Check "runtime.$Name" -Message 'Provenance pin must contain exactly one required runtime record.' -Value $Name
-            return $false
-        }
-
-        $expectedSize = [int64]$record[0].size_bytes
-        $expectedHash = ([string]$record[0].sha256).ToLowerInvariant()
-        $actualHash = Get-FileSha256 -Path $Path
-        if ($item.Length -ne $expectedSize -or $actualHash -cne $expectedHash) {
-            Add-Finding -Severity 'BLOCK' -Check "runtime.$Name" -Message 'Pinned runtime executable does not match provenance; refusing to execute it.' -Value ([pscustomobject]@{
-                path = $Path
-                expectedSize = $expectedSize
-                actualSize = [int64]$item.Length
-                expectedSha256 = $expectedHash
-                actualSha256 = $actualHash
-            })
-            return $false
-        }
-
-        Add-Finding -Severity 'PASS' -Check "runtime.$Name" -Message 'Pinned runtime executable matches provenance and is safe to invoke for read-only inspection.' -Value $Path
-        return $true
-    } catch {
-        Add-Finding -Severity 'BLOCK' -Check "runtime.$Name" -Message 'Could not validate pinned runtime executable provenance.' -Value $_.Exception.Message
-        return $false
-    }
-}
-
 function Invoke-Native {
     param(
         [Parameter(Mandatory = $true)][string]$Exe,
@@ -421,29 +374,46 @@ try {
     }
 
     $repoRoot = Split-Path -Parent $PSScriptRoot
+    $validationModulePath = Join-Path (Join-Path $repoRoot 'lib') 'HelloApproval.Validation.psm1'
+    if (-not (Test-Path -LiteralPath $validationModulePath -PathType Leaf)) {
+        Add-Finding -Severity 'BLOCK' -Check 'validation.module' -Message 'Shared validation module is missing.' -Value $validationModulePath
+        throw 'validation-module-unavailable'
+    }
+    try {
+        Import-Module $validationModulePath -Force -ErrorAction Stop
+    } catch {
+        Add-Finding -Severity 'BLOCK' -Check 'validation.module' -Message 'Could not import the shared validation module.' -Value $_.Exception.Message
+        throw 'validation-module-unavailable'
+    }
+
     $projectRoot = Join-Path $env:LOCALAPPDATA 'hello-approval'
     $gitRoot = Join-Path $projectRoot 'git'
     $signingConfig = Join-Path $gitRoot 'signing.gitconfig'
     $verificationConfig = Join-Path $gitRoot 'verification.gitconfig'
     $allowedSigners = Join-Path $gitRoot 'allowed_signers'
-    $publicKey = Join-Path $env:USERPROFILE '.ssh\github-signing.pub'
+    $publicKey = Join-Path (Join-Path $env:USERPROFILE '.ssh') 'github-signing.pub'
 
     Add-Finding -Severity 'INFO' -Check 'project.root' -Message 'Expected hello-approval project root.' -Value $projectRoot
 
     $principal = $null
     if (Test-Path -LiteralPath $allowedSigners -PathType Leaf) {
-        $lines = @(Get-Content -LiteralPath $allowedSigners)
-        if ($lines.Count -lt 1 -or $lines[0] -cne ("# {0}" -f $VerificationSchema)) {
-            Add-Finding -Severity 'BLOCK' -Check 'trust.ownership' -Message 'Project allowed_signers marker is missing or foreign.' -Value $allowedSigners
-        } else {
-            Add-Finding -Severity 'PASS' -Check 'trust.ownership' -Message 'Project allowed_signers ownership marker matches.' -Value $VerificationSchema
-        }
-        $entries = @($lines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and -not $_.TrimStart().StartsWith('#') })
-        if ($entries.Count -eq 1 -and $entries[0] -match '\A(?<principal>[A-Za-z0-9][A-Za-z0-9@._+:-]*) namespaces="git" (?<type>\S+) (?<blob>[A-Za-z0-9+/]+={0,2})\z') {
-            $principal = [string]$Matches.principal
-            Add-Finding -Severity 'PASS' -Check 'trust.principal' -Message 'Project-owned allowed_signers exposes one exact Git namespace principal.' -Value $principal
-        } else {
-            Add-Finding -Severity 'BLOCK' -Check 'trust.principal' -Message 'Could not derive one exact principal from project-owned allowed_signers.' -Value $allowedSigners
+        try {
+            $allowedSigners = Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $allowedSigners -ExpectedType File
+            $lines = @(Get-Content -LiteralPath $allowedSigners)
+            if ($lines.Count -lt 1 -or $lines[0] -cne ("# {0}" -f $VerificationSchema)) {
+                Add-Finding -Severity 'BLOCK' -Check 'trust.ownership' -Message 'Project allowed_signers marker is missing or foreign.' -Value $allowedSigners
+            } else {
+                Add-Finding -Severity 'PASS' -Check 'trust.ownership' -Message 'Project allowed_signers ownership marker matches.' -Value $VerificationSchema
+            }
+            $entries = @($lines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and -not $_.TrimStart().StartsWith('#') })
+            if ($entries.Count -eq 1 -and $entries[0] -match '\A(?<principal>[A-Za-z0-9][A-Za-z0-9@._+:-]*) namespaces="git" (?<type>\S+) (?<blob>[A-Za-z0-9+/]+={0,2})\z') {
+                $principal = [string]$Matches.principal
+                Add-Finding -Severity 'PASS' -Check 'trust.principal' -Message 'Project-owned allowed_signers exposes one exact Git namespace principal.' -Value $principal
+            } else {
+                Add-Finding -Severity 'BLOCK' -Check 'trust.principal' -Message 'Could not derive one exact principal from project-owned allowed_signers.' -Value $allowedSigners
+            }
+        } catch {
+            Add-Finding -Severity 'BLOCK' -Check 'trust.path' -Message 'Project allowed_signers failed shared trusted-path validation.' -Value $_.Exception.Message
         }
     } else {
         Add-Finding -Severity 'BLOCK' -Check 'trust.present' -Message 'Project-owned allowed_signers is missing.' -Value $allowedSigners
@@ -457,17 +427,45 @@ try {
         Add-Finding -Severity 'BLOCK' -Check 'contract.local-verification' -Message 'Local-verification contract probe was skipped because the current principal could not be derived.'
     }
 
-    $pinPath = Join-Path $repoRoot 'provenance\sshenc-v0.6.101.json'
+    $pinPath = Join-Path (Join-Path $repoRoot 'provenance') 'sshenc-v0.6.101.json'
     $pin = Get-Content -LiteralPath $pinPath -Raw | ConvertFrom-Json
+    $pinPolicyValid = $false
+    try {
+        [void](Assert-HelloApprovalPinPolicy -Pin $pin)
+        $pinPolicyValid = $true
+        Add-Finding -Severity 'PASS' -Check 'pin.policy' -Message 'Provenance pin satisfies the shared Phase 2 policy contract.'
+    } catch {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.policy.validation' -Message 'Provenance pin policy failed shared validation.' -Value $_.Exception.Message
+    }
+
     $releaseTag = [string]$pin.upstream.release_tag
-    $runtimeRoot = Join-Path $projectRoot ("runtime\sshenc\{0}" -f $releaseTag)
+    $runtimeRoot = Join-Path (Join-Path (Join-Path $projectRoot 'runtime') 'sshenc') $releaseTag
     $runtimeBin = Join-Path $runtimeRoot 'bin'
     $sshencPath = Join-Path $runtimeBin 'sshenc.exe'
     $agentPath = Join-Path $runtimeBin 'sshenc-agent.exe'
 
     $configPath = $null
-    $sshencPinned = Test-PinnedRuntimeFile -Path $sshencPath -Pin $pin -Name 'sshenc.exe'
-    if ($sshencPinned) {
+    $runtimeValidation = $null
+    if ($pinPolicyValid) {
+        try {
+            $runtimeValidation = Assert-HelloApprovalPinnedRuntime -RuntimeRoot $runtimeRoot -Pin $pin -TrustedBase $env:LOCALAPPDATA
+            $runtimeBin = $runtimeValidation.BinPath
+            $sshencPath = Join-Path $runtimeBin 'sshenc.exe'
+            $agentPath = Join-Path $runtimeBin 'sshenc-agent.exe'
+            foreach ($name in @($runtimeValidation.InstalledFiles)) {
+                Add-Finding -Severity 'PASS' -Check "runtime.$name" -Message 'Pinned runtime executable matches the shared exact-runtime contract.' -Value (Join-Path $runtimeBin $name)
+            }
+        } catch {
+            Add-Finding -Severity 'BLOCK' -Check 'runtime.surface' -Message 'Pinned runtime failed shared exact-runtime validation.' -Value $_.Exception.Message
+            if (-not (Test-Path -LiteralPath $sshencPath -PathType Leaf)) {
+                Add-Finding -Severity 'BLOCK' -Check 'runtime.sshenc.exe' -Message 'Pinned runtime file is missing.' -Value $sshencPath
+            }
+        }
+    } else {
+        Add-Finding -Severity 'BLOCK' -Check 'runtime.surface' -Message 'Pinned runtime validation was skipped because the provenance pin policy is invalid.' -Value $runtimeRoot
+    }
+
+    if ($null -ne $runtimeValidation) {
         try {
             $configResult = Invoke-Native -Exe $sshencPath -Arguments @('config','path') -Context 'Resolve authoritative sshenc config path'
             if ($configResult.Output.Count -ne 1) { throw 'sshenc config path did not return exactly one line.' }
@@ -477,7 +475,7 @@ try {
             Add-Finding -Severity 'BLOCK' -Check 'sshenc.config.path' -Message 'Could not resolve authoritative sshenc config path.' -Value $_.Exception.Message
         }
     } else {
-        Add-Finding -Severity 'BLOCK' -Check 'sshenc.config.path' -Message 'Skipped sshenc execution because the runtime executable did not pass provenance validation.' -Value $sshencPath
+        Add-Finding -Severity 'BLOCK' -Check 'sshenc.config.path' -Message 'Skipped sshenc execution because the runtime did not pass shared validation.' -Value $sshencPath
     }
 
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -528,6 +526,9 @@ try {
         Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Installed content-addressed launcher bundle directory is missing.' -Value $launcherVersionRoot
     } else {
         try {
+            $launcherVersionRoot = Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $launcherVersionRoot -ExpectedType Directory
+            $installedLauncher = Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $installedLauncher -ExpectedType File
+            $installedValidationModule = Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $installedValidationModule -ExpectedType File
             $launcherRootItem = Get-Item -LiteralPath $launcherVersionRoot -Force
             $launcherItems = @(Get-ChildItem -LiteralPath $launcherVersionRoot -Force)
             $launcherNames = @($launcherItems | ForEach-Object { $_.Name })
@@ -777,7 +778,8 @@ try {
                 continue
             }
             try {
-                $schemas = @(Get-GitAll -Git $git -Arguments @('config','--file',$owned.path,'--get-all','hello-approval.schema') -Context "Read schema values from $($owned.path)")
+                $ownedPath = Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $owned.path -ExpectedType File
+                $schemas = @(Get-GitAll -Git $git -Arguments @('config','--file',$ownedPath,'--get-all','hello-approval.schema') -Context "Read schema values from $ownedPath")
                 if ($schemas.Count -eq 1 -and $schemas[0] -ceq $owned.schema) {
                     Add-Finding -Severity 'PASS' -Check $owned.check -Message 'Owned Git config fragment contains exactly one matching schema value.' -Value $owned.path
                 } else {
@@ -851,11 +853,16 @@ try {
     }
 
     if (Test-Path -LiteralPath $publicKey -PathType Leaf) {
-        $keyLines = @(Get-Content -LiteralPath $publicKey | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        if ($keyLines.Count -eq 1 -and $keyLines[0] -match ('\A' + [regex]::Escape($ExpectedKeyType) + '\s+[A-Za-z0-9+/]+={0,2}(?:\s+.*)?\z')) {
-            Add-Finding -Severity 'PASS' -Check 'credential.public-key' -Message 'Canonical public signing key has the expected hardware-backed OpenSSH key type.' -Value $publicKey
-        } else {
-            Add-Finding -Severity 'BLOCK' -Check 'credential.public-key' -Message 'Canonical public signing key is malformed or has the wrong key type.' -Value $publicKey
+        try {
+            $publicKey = Assert-HelloApprovalTrustedPath -TrustedBase $env:USERPROFILE -Path $publicKey -ExpectedType File
+            $keyLines = @(Get-Content -LiteralPath $publicKey | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            if ($keyLines.Count -eq 1 -and $keyLines[0] -match ('\A' + [regex]::Escape($ExpectedKeyType) + '\s+[A-Za-z0-9+/]+={0,2}(?:\s+.*)?\z')) {
+                Add-Finding -Severity 'PASS' -Check 'credential.public-key' -Message 'Canonical public signing key has the expected hardware-backed OpenSSH key type.' -Value $publicKey
+            } else {
+                Add-Finding -Severity 'BLOCK' -Check 'credential.public-key' -Message 'Canonical public signing key is malformed or has the wrong key type.' -Value $publicKey
+            }
+        } catch {
+            Add-Finding -Severity 'BLOCK' -Check 'credential.public-key' -Message 'Canonical public signing key failed shared trusted-path validation.' -Value $_.Exception.Message
         }
     } else {
         Add-Finding -Severity 'BLOCK' -Check 'credential.public-key' -Message 'Canonical public signing key is missing.' -Value $publicKey
@@ -863,7 +870,7 @@ try {
 
     Add-Finding -Severity 'INFO' -Check 'credential.private' -Message 'Doctor intentionally does not enumerate/delete platform private credentials. Credential existence/use is proven by signing acceptance, not by materializing private key state.'
 } catch {
-    if ($_.Exception.Message -notin @('unsupported-platform','required-environment-missing')) {
+    if ($_.Exception.Message -notin @('unsupported-platform','required-environment-missing','validation-module-unavailable')) {
         Add-Finding -Severity 'BLOCK' -Check 'doctor.internal' -Message 'Doctor encountered an unexpected internal failure.' -Value $_.Exception.Message
     }
 }
