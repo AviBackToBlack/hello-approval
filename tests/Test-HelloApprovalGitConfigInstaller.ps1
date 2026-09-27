@@ -253,15 +253,18 @@ try {
         $signingKey = @(git config --file $ownedConfig --get-all user.signingkey)
         $includes = @(git config --file $write.GlobalConfig --get-all include.path)
         $staging = @(Get-ChildItem -LiteralPath (Split-Path -Parent $ownedConfig) -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '.signing.gitconfig.staging.*' })
+        $programSame = $program.Count -eq 1 -and (Test-SameFilePathValue -ConfiguredValue $program[0] -ExpectedPath $runtimeProgram)
+        $keySame = $signingKey.Count -eq 1 -and (Test-SameFilePathValue -ConfiguredValue $signingKey[0] -ExpectedPath $publicKey)
+        $includeSame = $includes.Count -eq 1 -and (Test-SameFilePathValue -ConfiguredValue $includes[0] -ExpectedPath $ownedConfig)
 
         $writeOk = (
             $writeFirst.ExitCode -eq 0 -and
             $writeSecond.ExitCode -eq 0 -and
             $schema.Count -eq 1 -and $schema[0] -ceq 'hello-approval/ha-1.4/v1' -and
             $format.Count -eq 1 -and $format[0] -ceq 'ssh' -and
-            $program.Count -eq 1 -and (Test-SameFilePathValue -ConfiguredValue $program[0] -ExpectedPath $runtimeProgram) -and
-            $signingKey.Count -eq 1 -and (Test-SameFilePathValue -ConfiguredValue $signingKey[0] -ExpectedPath $publicKey) -and
-            $includes.Count -eq 1 -and (Test-SameFilePathValue -ConfiguredValue $includes[0] -ExpectedPath $ownedConfig) -and
+            $programSame -and
+            $keySame -and
+            $includeSame -and
             $staging.Count -eq 0
         )
 
@@ -269,8 +272,8 @@ try {
             Pass 'isolated Git config write path installs exact fragment/include and reruns idempotently'
         } else {
             Fail 'isolated Git config write path installs exact fragment/include and reruns idempotently' (
-                "first={0} second={1} schema={2} format={3} program={4} key={5} includes={6} staging={7} firstOutput={8} secondOutput={9}" -f
-                $writeFirst.ExitCode,$writeSecond.ExitCode,($schema -join ';'),($format -join ';'),($program -join ';'),($signingKey -join ';'),($includes -join ';'),$staging.Count,($writeFirst.Output -join ' | '),($writeSecond.Output -join ' | ')
+                "first={0} second={1} schema={2} format={3} programSame={4} keySame={5} includeSame={6} program={7} expectedProgram={8} key={9} expectedKey={10} includes={11} expectedInclude={12} staging={13} firstOutput={14} secondOutput={15}" -f
+                $writeFirst.ExitCode,$writeSecond.ExitCode,($schema -join ';'),($format -join ';'),$programSame,$keySame,$includeSame,($program -join ';'),$runtimeProgram,($signingKey -join ';'),$publicKey,($includes -join ';'),$ownedConfig,$staging.Count,($writeFirst.Output -join ' | '),($writeSecond.Output -join ' | ')
             )
         }
     }
