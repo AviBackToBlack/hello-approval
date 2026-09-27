@@ -61,6 +61,29 @@ function Get-FileSha256 {
     }
 }
 
+function Get-LfNormalizedFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $normalized = New-Object IO.MemoryStream
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        for ($i = 0; $i -lt $bytes.Length; $i++) {
+            if ($bytes[$i] -eq 13 -and ($i + 1) -lt $bytes.Length -and $bytes[$i + 1] -eq 10) {
+                $normalized.WriteByte(10)
+                $i++
+            } else {
+                $normalized.WriteByte($bytes[$i])
+            }
+        }
+        $normalized.Position = 0
+        return ([BitConverter]::ToString($sha.ComputeHash($normalized))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+        $normalized.Dispose()
+    }
+}
+
 function Test-PinnedRuntimeFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -481,7 +504,20 @@ try {
     $installedValidationModule = if ($null -ne $launcherVersionRoot) { Join-Path $launcherVersionRoot 'HelloApproval.Validation.psm1' } else { $null }
     $launcherSurfaceValid = $false
 
-    if ($null -eq $launcherHash -or
+    $sourceModuleStaleCrlf = $false
+    if ($null -ne $validationModuleHash -and
+        $null -ne $launcherPinnedModuleHash -and
+        $launcherPinnedModuleHash -cne $validationModuleHash) {
+        try {
+            $sourceModuleStaleCrlf = (Get-LfNormalizedFileSha256 -Path $sourceValidationModule) -ceq $launcherPinnedModuleHash
+        } catch {
+            $sourceModuleStaleCrlf = $false
+        }
+    }
+
+    if ($sourceModuleStaleCrlf) {
+        Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Repository validation module has stale CRLF working-tree bytes despite .gitattributes eol=lf. Refresh lib/HelloApproval.Validation.psm1 before installing; see docs/SCHEDULED-TASK.md.' -Value $sourceValidationModule
+    } elseif ($null -eq $launcherHash -or
         $null -eq $validationModuleHash -or
         $launcherPinnedModuleHash -cne $validationModuleHash -or
         $null -eq $launcherVersionRoot -or
