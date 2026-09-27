@@ -230,9 +230,9 @@ try {
         $ownedConfig = Join-Path (Join-Path (Join-Path $write.LocalAppData 'hello-approval') 'git') 'signing.gitconfig'
         $runtimeProgram = Join-Path (Join-Path (Join-Path (Join-Path (Join-Path $write.LocalAppData 'hello-approval') 'runtime') 'sshenc') 'v-test') 'binsshenc.exe'
         $publicKey = Join-Path (Join-Path $write.UserProfile '.ssh') 'github-signing.pub'
-        $expectedProgram = $runtimeProgram -replace '\','/'
-        $expectedKey = $publicKey -replace '\','/'
-        $expectedInclude = $ownedConfig -replace '\','/'
+        $expectedProgram = $runtimeProgram.Replace('\','/')
+        $expectedKey = $publicKey.Replace('\','/')
+        $expectedInclude = $ownedConfig.Replace('\','/')
 
         $schema = @(git config --file $ownedConfig --get-all hello-approval.schema)
         $format = @(git config --file $ownedConfig --get-all gpg.format)
@@ -248,7 +248,7 @@ try {
             $format.Count -eq 1 -and $format[0] -ceq 'ssh' -and
             $program.Count -eq 1 -and $program[0] -ceq $expectedProgram -and
             $signingKey.Count -eq 1 -and $signingKey[0] -ceq $expectedKey -and
-            $includes.Count -eq 1 -and (($includes[0] -replace '\','/') -ceq $expectedInclude) -and
+            $includes.Count -eq 1 -and ($includes[0].Replace('\','/') -ceq $expectedInclude) -and
             $staging.Count -eq 0
         )
 
