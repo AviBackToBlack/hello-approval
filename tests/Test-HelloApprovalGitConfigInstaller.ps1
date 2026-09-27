@@ -48,7 +48,7 @@ function Test-SameFilePathValue {
     )
 
     try {
-        $configuredWindows = $ConfiguredValue.Replace('/', '')
+        $configuredWindows = $ConfiguredValue.Replace([char]'/', [IO.Path]::DirectorySeparatorChar)
         $configuredFull = (Get-Item -LiteralPath $configuredWindows -Force -ErrorAction Stop).FullName
         $expectedFull = (Get-Item -LiteralPath $ExpectedPath -Force -ErrorAction Stop).FullName
         return [string]::Equals($configuredFull, $expectedFull, [StringComparison]::OrdinalIgnoreCase)
