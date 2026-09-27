@@ -55,9 +55,13 @@ function New-Fixture {
         [switch]$BinCaseMismatch,
         [switch]$FileCaseMismatch,
         [switch]$ProjectRootThroughJunction,
+        [switch]$GitRootThroughJunction,
+        [switch]$LauncherAppThroughJunction,
         [switch]$PublicKeyThroughJunction,
         [switch]$MalformedUnusedName,
-        [switch]$RuntimeMissing
+        [switch]$RuntimeMissing,
+        [switch]$AgentHashMismatch,
+        [switch]$ExtraRuntimeRootEntry
     )
 
     $tool = Join-Path $Root 'tool'
@@ -88,8 +92,15 @@ function New-Fixture {
         $physicalProject = $logicalProject
     }
 
-    $gitRoot = Join-Path $physicalProject 'git'
-    [void][IO.Directory]::CreateDirectory($gitRoot)
+    $logicalGitRoot = Join-Path $logicalProject 'git'
+    if($GitRootThroughJunction){
+        $gitTarget = Join-Path $Root 'git-redirect'
+        New-Junction -Link $logicalGitRoot -Target $gitTarget
+        $gitRoot = $gitTarget
+    } else {
+        $gitRoot = Join-Path $physicalProject 'git'
+        [void][IO.Directory]::CreateDirectory($gitRoot)
+    }
     $allowed = Join-Path $gitRoot 'allowed_signers'
     $trustText = '# hello-approval/ha-1.5/v1' + [Environment]::NewLine +
         $principal + ' namespaces="git" ' + $keyType + ' AAAATESTKEY' + [Environment]::NewLine
@@ -113,6 +124,22 @@ function New-Fixture {
         $publicKey = Join-Path $sshDir 'github-signing.pub'
     }
     [IO.File]::WriteAllText($publicKey,($keyType + ' AAAATESTKEY synthetic'),[Text.UTF8Encoding]::new($false))
+
+    $sourceLauncher = Join-Path $scripts 'Start-HelloApprovalAgent.ps1'
+    $sourceValidationModule = Join-Path $lib 'HelloApproval.Validation.psm1'
+    $launcherHash = Get-FileSha256Local $sourceLauncher
+    $appRoot = Join-Path $physicalProject 'app'
+    if($LauncherAppThroughJunction){
+        $appTarget = Join-Path $Root 'app-redirect'
+        New-Junction -Link (Join-Path $logicalProject 'app') -Target $appTarget
+        $launcherBase = Join-Path $appTarget 'launcher'
+    } else {
+        $launcherBase = Join-Path $appRoot 'launcher'
+    }
+    $launcherVersionRoot = Join-Path $launcherBase $launcherHash
+    [void][IO.Directory]::CreateDirectory($launcherVersionRoot)
+    Copy-Item -LiteralPath $sourceLauncher -Destination (Join-Path $launcherVersionRoot 'Start-HelloApprovalAgent.ps1') -Force
+    Copy-Item -LiteralPath $sourceValidationModule -Destination (Join-Path $launcherVersionRoot 'HelloApproval.Validation.psm1') -Force
 
     $runtimeBase = Join-Path (Join-Path $physicalProject 'runtime') 'sshenc'
     $runtimeRoot = Join-Path $runtimeBase 'v-test'
@@ -163,6 +190,12 @@ function New-Fixture {
     }
     [IO.File]::WriteAllText((Join-Path $prov 'sshenc-v0.6.101.json'),($pin|ConvertTo-Json -Depth 20),[Text.UTF8Encoding]::new($false))
 
+    if($AgentHashMismatch){
+        [IO.File]::WriteAllBytes($agent,[byte[]](1,2,3,4))
+    }
+    if($ExtraRuntimeRootEntry){
+        [IO.File]::WriteAllText((Join-Path $runtimeRoot 'extra.txt'),'extra',[Text.UTF8Encoding]::new($false))
+    }
     if($RuntimeMissing){
         Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
     }
@@ -253,8 +286,12 @@ try {
         [pscustomobject]@{Name='Bin case-only directory mismatch';Args=@{BinCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='runtime file case-only mismatch';Args=@{FileCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='hello-approval project-root junction';Args=@{ProjectRootThroughJunction=$true};Kind='project-junction'},
+        [pscustomobject]@{Name='project Git directory junction';Args=@{GitRootThroughJunction=$true};Kind='git-junction'},
+        [pscustomobject]@{Name='launcher app directory junction';Args=@{LauncherAppThroughJunction=$true};Kind='launcher-junction'},
         [pscustomobject]@{Name='signing public key through .ssh junction';Args=@{PublicKeyThroughJunction=$true};Kind='public-key-junction'},
-        [pscustomobject]@{Name='malformed unused pin leaf name';Args=@{MalformedUnusedName=$true};Kind='pin-delta'}
+        [pscustomobject]@{Name='malformed unused pin leaf name';Args=@{MalformedUnusedName=$true};Kind='pin-delta'},
+        [pscustomobject]@{Name='agent hash mismatch';Args=@{AgentHashMismatch=$true};Kind='composition-parity'},
+        [pscustomobject]@{Name='extra runtime root entry';Args=@{ExtraRuntimeRootEntry=$true};Kind='composition-parity'}
     )
 
     foreach($case in $cases){
@@ -272,10 +309,13 @@ try {
             'exact' {
                 if((Has-Finding $result 'PASS' 'runtime.sshenc.exe') -and
                    (Has-Finding $result 'PASS' 'trust.ownership') -and
-                   (Has-Finding $result 'PASS' 'credential.public-key')){
-                    Pass 'exact direct runtime/trust/public-key surfaces retain PASS findings'
+                   (Has-Finding $result 'PASS' 'credential.public-key') -and
+                   (Has-Finding $result 'PASS' 'launcher.cache') -and
+                   (Has-Finding $result 'PASS' 'git.signing-fragment') -and
+                   (Has-Finding $result 'PASS' 'git.verification-fragment')){
+                    Pass 'exact direct runtime/trust/public-key/launcher/Git surfaces retain PASS findings'
                 } else {
-                    Fail 'exact direct runtime/trust/public-key surfaces retain PASS findings' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
+                    Fail 'exact direct runtime/trust/public-key/launcher/Git surfaces retain PASS findings' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
                 }
             }
             'missing-runtime' {
@@ -303,7 +343,9 @@ try {
             }
             'project-junction' {
                 if($ExpectedPhase1){
-                    if((Has-Finding $result 'PASS' 'runtime.sshenc.exe') -and (Has-Finding $result 'PASS' 'trust.ownership')){
+                    if((Has-Finding $result 'PASS' 'runtime.sshenc.exe') -and
+                       (Has-Finding $result 'PASS' 'trust.ownership') -and
+                       (Has-Finding $result 'PASS' 'launcher.cache')){
                         Pass 'Phase1 Doctor directly accepts hello-approval project-root junction'
                     } else {
                         Fail 'Phase1 Doctor directly accepts hello-approval project-root junction' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
@@ -313,6 +355,40 @@ try {
                         Pass 'hardened Doctor rejects hello-approval project-root junction'
                     } else {
                         Fail 'hardened Doctor rejects hello-approval project-root junction' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
+                    }
+                }
+            }
+            'git-junction' {
+                if($ExpectedPhase1){
+                    if((Has-Finding $result 'PASS' 'trust.ownership') -and
+                       (Has-Finding $result 'PASS' 'git.signing-fragment') -and
+                       (Has-Finding $result 'PASS' 'git.verification-fragment')){
+                        Pass 'Phase1 Doctor directly accepts project Git directory junction'
+                    } else {
+                        Fail 'Phase1 Doctor directly accepts project Git directory junction' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
+                    }
+                } else {
+                    if((Has-Finding $result 'BLOCK' 'trust.path') -and
+                       (Has-Finding $result 'BLOCK' 'git.signing-fragment') -and
+                       (Has-Finding $result 'BLOCK' 'git.verification-fragment')){
+                        Pass 'hardened Doctor rejects project Git directory junction at every direct consumer'
+                    } else {
+                        Fail 'hardened Doctor rejects project Git directory junction at every direct consumer' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
+                    }
+                }
+            }
+            'launcher-junction' {
+                if($ExpectedPhase1){
+                    if(Has-Finding $result 'PASS' 'launcher.cache'){
+                        Pass 'Phase1 Doctor directly accepts launcher app-directory junction'
+                    } else {
+                        Fail 'Phase1 Doctor directly accepts launcher app-directory junction' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
+                    }
+                } else {
+                    if(Has-Finding $result 'BLOCK' 'launcher.cache'){
+                        Pass 'hardened Doctor rejects launcher app-directory junction'
+                    } else {
+                        Fail 'hardened Doctor rejects launcher app-directory junction' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
                     }
                 }
             }
@@ -328,6 +404,22 @@ try {
                         Pass 'hardened Doctor rejects signing public key through .ssh junction'
                     } else {
                         Fail 'hardened Doctor rejects signing public key through .ssh junction' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
+                    }
+                }
+            }
+            'composition-parity' {
+                $contractBlocked = Has-Finding $result 'BLOCK' 'contract.scheduled-task'
+                if($ExpectedPhase1){
+                    if($contractBlocked -and (Has-Finding $result 'PASS' 'runtime.sshenc.exe')){
+                        Pass ("Phase1 Doctor already blocks {0} through scheduled-task contract composition" -f $case.Name)
+                    } else {
+                        Fail ("Phase1 Doctor already blocks {0} through scheduled-task contract composition" -f $case.Name) (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
+                    }
+                } else {
+                    if($contractBlocked -and (Has-Finding $result 'BLOCK' 'runtime.surface')){
+                        Pass ("hardened Doctor keeps {0} blocked and diagnoses runtime.surface directly" -f $case.Name)
+                    } else {
+                        Fail ("hardened Doctor keeps {0} blocked and diagnoses runtime.surface directly" -f $case.Name) (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
                     }
                 }
             }
