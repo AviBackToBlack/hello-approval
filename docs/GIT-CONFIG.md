@@ -90,3 +90,9 @@ This is a guardrail, not a hard security boundary: Git's `pre-commit` hook can b
 Before mutation, the installer snapshots the Git global write file reported by `git var GIT_CONFIG_GLOBAL` and the owned fragment if present. If include registration or post-write verification fails, both files are restored to their previous bytes where possible.
 
 The installer intentionally uses Git itself to write `include.path` and staged config values; it does not implement a second Git-config parser/writer. `Test-HelloApprovalPreflight.ps1` also reads global/system Git configuration with includes enabled so the project-owned fragment is visible to diagnostics instead of being reported as absent.
+
+## Phase 2 trusted path boundaries
+
+Phase 2 treats USERPROFILE as the external trusted boundary for the signing public-key path and LOCALAPPDATA as the external trusted boundary for the pinned runtime and project-owned Git fragment. Existing descendants below those boundaries must be real non-reparse components. Missing project-owned Git directories are validated before creation and revalidated after creation; staged and final owned config files are revalidated after mutation before later trusted consumption.
+
+This migration does not redefine Git's own global-write-path or include.path identity rules. git var GIT_CONFIG_GLOBAL, include precedence, and the deferred canonical-include-identity work remain caller/Git concerns outside the shared path-validation contract.
