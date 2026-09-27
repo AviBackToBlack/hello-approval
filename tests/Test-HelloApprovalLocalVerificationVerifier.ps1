@@ -125,6 +125,7 @@ function New-Fixture {
         Verifier=$verifier
         LocalAppData=$local
         UserProfile=$profile
+        GlobalConfig=Join-Path $Root 'global.gitconfig'
         Repo=$signedRepo
     }
 }
@@ -135,10 +136,21 @@ function Invoke-Verifier {
     $oldLocal=$env:LOCALAPPDATA
     $oldProfile=$env:USERPROFILE
     $oldHome=$env:HOME
+    $oldXdg=$env:XDG_CONFIG_HOME
+    $oldGitConfigEnvironment=@{}
+    foreach($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })){
+        $oldGitConfigEnvironment[$entry.Name]=$entry.Value
+    }
     try {
+        foreach($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })){
+            Remove-Item -LiteralPath ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
+        }
+        Remove-Item Env:XDG_CONFIG_HOME -ErrorAction SilentlyContinue
         $env:LOCALAPPDATA=$Fixture.LocalAppData
         $env:USERPROFILE=$Fixture.UserProfile
         $env:HOME=$Fixture.UserProfile
+        $env:GIT_CONFIG_GLOBAL=$Fixture.GlobalConfig
+        $env:GIT_CONFIG_NOSYSTEM='1'
         $saved=$ErrorActionPreference
         try {
             $ErrorActionPreference='Continue'
@@ -147,9 +159,16 @@ function Invoke-Verifier {
         } finally {$ErrorActionPreference=$saved}
         return [pscustomobject]@{ExitCode=$rc;Output=@($out)}
     } finally {
+        foreach($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })){
+            Remove-Item -LiteralPath ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
+        }
+        foreach($name in $oldGitConfigEnvironment.Keys){
+            Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $oldGitConfigEnvironment[$name]
+        }
         $env:LOCALAPPDATA=$oldLocal
         $env:USERPROFILE=$oldProfile
         if($null -eq $oldHome){Remove-Item Env:HOME -ErrorAction SilentlyContinue}else{$env:HOME=$oldHome}
+        if($null -eq $oldXdg){Remove-Item Env:XDG_CONFIG_HOME -ErrorAction SilentlyContinue}else{$env:XDG_CONFIG_HOME=$oldXdg}
     }
 }
 
