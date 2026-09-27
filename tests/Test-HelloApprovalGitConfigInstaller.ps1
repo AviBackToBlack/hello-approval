@@ -244,7 +244,7 @@ try {
         $writeSecond = Invoke-Installer -Fixture $write
 
         $ownedConfig = Join-Path (Join-Path (Join-Path $write.LocalAppData 'hello-approval') 'git') 'signing.gitconfig'
-        $runtimeProgram = Join-Path (Join-Path (Join-Path (Join-Path (Join-Path $write.LocalAppData 'hello-approval') 'runtime') 'sshenc') 'v-test') 'binsshenc.exe'
+        $runtimeProgram = Join-Path (Join-Path (Join-Path (Join-Path (Join-Path (Join-Path $write.LocalAppData 'hello-approval') 'runtime') 'sshenc') 'v-test') 'bin') 'sshenc.exe'
         $publicKey = Join-Path (Join-Path $write.UserProfile '.ssh') 'github-signing.pub'
 
         $schema = @(git config --file $ownedConfig --get-all hello-approval.schema)
