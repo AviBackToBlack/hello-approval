@@ -84,7 +84,10 @@ function New-Junction {
 function New-Fixture {
     param(
         [string]$Root,
-        [switch]$PublicKeyThroughJunction
+        [switch]$PublicKeyThroughJunction,
+        [switch]$GitRootThroughJunction,
+        [switch]$TrustFileReparseLeaf,
+        [switch]$VerificationConfigReparseLeaf
     )
 
     $installer = New-SyntheticRepo -Root $Root
@@ -95,6 +98,18 @@ function New-Fixture {
 
     $projectRoot = Join-Path $local 'hello-approval'
     [void][IO.Directory]::CreateDirectory($projectRoot)
+
+    if ($GitRootThroughJunction) {
+        New-Junction -Link (Join-Path $projectRoot 'git') -Target (Join-Path $Root 'git-redirect')
+    } elseif ($TrustFileReparseLeaf) {
+        $gitDir = Join-Path $projectRoot 'git'
+        [void][IO.Directory]::CreateDirectory($gitDir)
+        New-Junction -Link (Join-Path $gitDir 'allowed_signers') -Target (Join-Path $Root 'trust-redirect')
+    } elseif ($VerificationConfigReparseLeaf) {
+        $gitDir = Join-Path $projectRoot 'git'
+        [void][IO.Directory]::CreateDirectory($gitDir)
+        New-Junction -Link (Join-Path $gitDir 'verification.gitconfig') -Target (Join-Path $Root 'verification-config-redirect')
+    }
 
     if ($PublicKeyThroughJunction) {
         $sshTarget = Join-Path $Root 'ssh-redirect'
@@ -237,6 +252,32 @@ try {
             Pass 'hardened installer rejects signing public key through .ssh junction'
         } else {
             Fail 'hardened installer rejects signing public key through .ssh junction' ("rc={0} output={1}" -f $keyResult.ExitCode,($keyResult.Output -join ' | '))
+        }
+    }
+
+    if (-not $ExpectedPhase1) {
+        $gitJunction = New-Fixture -Root (Join-Path $root 'git-junction') -GitRootThroughJunction
+        $gitJunctionResult = Invoke-Installer -Fixture $gitJunction -WhatIf
+        if ($gitJunctionResult.ExitCode -ne 0 -and (($gitJunctionResult.Output -join ' | ') -match 'reparse point')) {
+            Pass 'hardened installer rejects project Git directory junction'
+        } else {
+            Fail 'hardened installer rejects project Git directory junction' ("rc={0} output={1}" -f $gitJunctionResult.ExitCode,($gitJunctionResult.Output -join ' | '))
+        }
+
+        $trustLeaf = New-Fixture -Root (Join-Path $root 'trust-leaf-reparse') -TrustFileReparseLeaf
+        $trustLeafResult = Invoke-Installer -Fixture $trustLeaf -WhatIf
+        if ($trustLeafResult.ExitCode -ne 0 -and (($trustLeafResult.Output -join ' | ') -match 'reparse point')) {
+            Pass 'hardened installer rejects allowed_signers reparse leaf'
+        } else {
+            Fail 'hardened installer rejects allowed_signers reparse leaf' ("rc={0} output={1}" -f $trustLeafResult.ExitCode,($trustLeafResult.Output -join ' | '))
+        }
+
+        $configLeaf = New-Fixture -Root (Join-Path $root 'verification-config-leaf-reparse') -VerificationConfigReparseLeaf
+        $configLeafResult = Invoke-Installer -Fixture $configLeaf -WhatIf
+        if ($configLeafResult.ExitCode -ne 0 -and (($configLeafResult.Output -join ' | ') -match 'reparse point')) {
+            Pass 'hardened installer rejects verification Git-config reparse leaf'
+        } else {
+            Fail 'hardened installer rejects verification Git-config reparse leaf' ("rc={0} output={1}" -f $configLeafResult.ExitCode,($configLeafResult.Output -join ' | '))
         }
     }
 
