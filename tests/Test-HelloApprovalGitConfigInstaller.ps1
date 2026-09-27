@@ -41,6 +41,22 @@ function Get-FileSha256Local([string]$Path) {
     }
 }
 
+function Test-SameFilePathValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$ConfiguredValue,
+        [Parameter(Mandatory = $true)][string]$ExpectedPath
+    )
+
+    try {
+        $configuredWindows = $ConfiguredValue.Replace('/', '')
+        $configuredFull = (Get-Item -LiteralPath $configuredWindows -Force -ErrorAction Stop).FullName
+        $expectedFull = (Get-Item -LiteralPath $ExpectedPath -Force -ErrorAction Stop).FullName
+        return [string]::Equals($configuredFull, $expectedFull, [StringComparison]::OrdinalIgnoreCase)
+    } catch {
+        return $false
+    }
+}
+
 function New-SyntheticRepo {
     param([string]$Root)
 
@@ -230,9 +246,6 @@ try {
         $ownedConfig = Join-Path (Join-Path (Join-Path $write.LocalAppData 'hello-approval') 'git') 'signing.gitconfig'
         $runtimeProgram = Join-Path (Join-Path (Join-Path (Join-Path (Join-Path $write.LocalAppData 'hello-approval') 'runtime') 'sshenc') 'v-test') 'binsshenc.exe'
         $publicKey = Join-Path (Join-Path $write.UserProfile '.ssh') 'github-signing.pub'
-        $expectedProgram = $runtimeProgram.Replace('\','/')
-        $expectedKey = $publicKey.Replace('\','/')
-        $expectedInclude = $ownedConfig.Replace('\','/')
 
         $schema = @(git config --file $ownedConfig --get-all hello-approval.schema)
         $format = @(git config --file $ownedConfig --get-all gpg.format)
@@ -246,9 +259,9 @@ try {
             $writeSecond.ExitCode -eq 0 -and
             $schema.Count -eq 1 -and $schema[0] -ceq 'hello-approval/ha-1.4/v1' -and
             $format.Count -eq 1 -and $format[0] -ceq 'ssh' -and
-            $program.Count -eq 1 -and $program[0] -ceq $expectedProgram -and
-            $signingKey.Count -eq 1 -and $signingKey[0] -ceq $expectedKey -and
-            $includes.Count -eq 1 -and ($includes[0].Replace('\','/') -ceq $expectedInclude) -and
+            $program.Count -eq 1 -and (Test-SameFilePathValue -ConfiguredValue $program[0] -ExpectedPath $runtimeProgram) -and
+            $signingKey.Count -eq 1 -and (Test-SameFilePathValue -ConfiguredValue $signingKey[0] -ExpectedPath $publicKey) -and
+            $includes.Count -eq 1 -and (Test-SameFilePathValue -ConfiguredValue $includes[0] -ExpectedPath $ownedConfig) -and
             $staging.Count -eq 0
         )
 
