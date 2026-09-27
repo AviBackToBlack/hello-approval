@@ -61,7 +61,8 @@ function New-Fixture {
         [switch]$MalformedUnusedName,
         [switch]$RuntimeMissing,
         [switch]$AgentHashMismatch,
-        [switch]$ExtraRuntimeRootEntry
+        [switch]$ExtraRuntimeRootEntry,
+        [switch]$ValidationModuleMissing
     )
 
     $tool = Join-Path $Root 'tool'
@@ -74,6 +75,9 @@ function New-Fixture {
     Copy-Item -Path (Join-Path $sourceScripts '*') -Destination $scripts -Recurse -Force
     Copy-Item -Path (Join-Path $sourceLib '*') -Destination $lib -Recurse -Force
     Copy-Item -Path (Join-Path $sourceProvenance '*') -Destination $prov -Recurse -Force
+    if($ValidationModuleMissing){
+        Remove-Item -LiteralPath (Join-Path $lib 'HelloApproval.Validation.psm1') -Force
+    }
 
     $local = Join-Path $Root 'local'
     $app = Join-Path $Root 'roaming'
@@ -282,6 +286,7 @@ $root=Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-doctor-'+[guid]::New
 try {
     $cases=@(
         [pscustomobject]@{Name='exact direct surfaces';Args=@{};Kind='exact'},
+        [pscustomobject]@{Name='missing validation module';Args=@{ValidationModuleMissing=$true};Kind='module-missing'},
         [pscustomobject]@{Name='missing runtime';Args=@{RuntimeMissing=$true};Kind='missing-runtime'},
         [pscustomobject]@{Name='Bin case-only directory mismatch';Args=@{BinCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='runtime file case-only mismatch';Args=@{FileCaseMismatch=$true};Kind='runtime-delta'},
@@ -316,6 +321,26 @@ try {
                     Pass 'exact direct runtime/trust/public-key/launcher/Git surfaces retain PASS findings'
                 } else {
                     Fail 'exact direct runtime/trust/public-key/launcher/Git surfaces retain PASS findings' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
+                }
+            }
+            'module-missing' {
+                if($ExpectedPhase1){
+                    if(-not (Has-Finding $result 'BLOCK' 'validation.module')){
+                        Pass 'Phase1 Doctor does not require shared validation module'
+                    } else {
+                        Fail 'Phase1 Doctor does not require shared validation module' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
+                    }
+                } else {
+                    $structured = ($result.ExitCode -eq 2 -and
+                        [string]$result.Json.schema -ceq 'hello-approval/doctor/v1' -and
+                        -not [bool]$result.Json.healthy)
+                    if($structured -and
+                       (Has-Finding $result 'BLOCK' 'validation.module') -and
+                       -not (Has-DoctorInternal $result)){
+                        Pass 'hardened Doctor classifies missing shared module as structured validation.module BLOCK'
+                    } else {
+                        Fail 'hardened Doctor classifies missing shared module as structured validation.module BLOCK' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
+                    }
                 }
             }
             'missing-runtime' {
