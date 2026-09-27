@@ -212,3 +212,15 @@ For a deliberate rotation, record at minimum:
 - any repositories/verifiers with separate trust stores that still require rotation.
 
 This gives future auditors a timeline without pretending that historical signatures or GitHub persistent verification records were retroactively rewritten.
+
+### Phase 2 shared validation boundaries
+
+The Doctor now delegates shared validation concerns to lib/HelloApproval.Validation.psm1:
+
+- parsed provenance-pin policy consistency;
+- the exact pinned runtime surface under LOCALAPPDATA, including required file names, sizes, SHA-256 values, and non-reparse ancestry;
+- trusted-path ancestry for project-owned allowed_signers, owned Git fragments, the installed launcher bundle, and the canonical signing public key under USERPROFILE.
+
+Shared assertion failures are translated into Doctor BLOCK findings rather than being reported as doctor.internal. The Doctor still owns the surrounding operational diagnosis: launcher CRLF/staleness explanation, exact launcher bundle composition, Scheduled Task definition/runtime, process/service state, pipe state, SSH configuration, Git precedence/effective values, and credential-shape checks.
+
+Malformed provenance input that fails before the parsed-pin policy assertion, such as invalid JSON or unusable caller-owned release metadata, remains separate hardening work tracked in issue #24.
