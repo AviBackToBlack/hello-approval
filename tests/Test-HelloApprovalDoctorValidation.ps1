@@ -67,9 +67,9 @@ function New-Fixture {
     [void][IO.Directory]::CreateDirectory($scripts)
     [void][IO.Directory]::CreateDirectory($lib)
     [void][IO.Directory]::CreateDirectory($prov)
-    Copy-Item -LiteralPath (Join-Path $sourceScripts '*') -Destination $scripts -Recurse -Force
-    Copy-Item -LiteralPath (Join-Path $sourceLib '*') -Destination $lib -Recurse -Force
-    Copy-Item -LiteralPath (Join-Path $sourceProvenance '*') -Destination $prov -Recurse -Force
+    Copy-Item -Path (Join-Path $sourceScripts '*') -Destination $scripts -Recurse -Force
+    Copy-Item -Path (Join-Path $sourceLib '*') -Destination $lib -Recurse -Force
+    Copy-Item -Path (Join-Path $sourceProvenance '*') -Destination $prov -Recurse -Force
 
     $local = Join-Path $Root 'local'
     $app = Join-Path $Root 'roaming'
