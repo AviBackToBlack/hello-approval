@@ -50,7 +50,8 @@ function New-Fixture {
         [switch]$BinCaseMismatch,
         [switch]$FileCaseMismatch,
         [switch]$ProjectRootThroughJunction,
-        [switch]$MalformedUnusedName
+        [switch]$MalformedUnusedName,
+        [switch]$RuntimeMissing
     )
 
     $tool=Join-Path $Root 'tool'
@@ -124,6 +125,9 @@ function New-Fixture {
         }
     }
     [IO.File]::WriteAllText((Join-Path $prov 'sshenc-v0.6.101.json'),($pin|ConvertTo-Json -Depth 20),[Text.UTF8Encoding]::new($false))
+    if($RuntimeMissing){
+        Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
+    }
 
     return [pscustomobject]@{
         Preflight=Join-Path $scripts 'Test-HelloApprovalPreflight.ps1'
@@ -190,6 +194,7 @@ $root=Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-preflight-'+[guid]::
 try {
     $cases=@(
         [pscustomobject]@{Name='exact runtime';Args=@{};Kind='exact'},
+        [pscustomobject]@{Name='missing runtime';Args=@{RuntimeMissing=$true};Kind='missing'},
         [pscustomobject]@{Name='Bin case-only directory mismatch';Args=@{BinCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='runtime file case-only mismatch';Args=@{FileCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='hello-approval project-root junction';Args=@{ProjectRootThroughJunction=$true};Kind='runtime-delta'},
@@ -207,6 +212,15 @@ try {
                 Pass 'exact runtime/pin surface has no runtime or pin BLOCK findings'
             } else {
                 Fail 'exact runtime/pin surface has no runtime or pin BLOCK findings' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
+            }
+            continue
+        }
+
+        if($case.Kind -eq 'missing'){
+            if(-not (Has-RuntimeBlock $result)){
+                Pass 'missing runtime remains non-blocking preflight INFO'
+            } else {
+                Fail 'missing runtime remains non-blocking preflight INFO' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
             }
             continue
         }
