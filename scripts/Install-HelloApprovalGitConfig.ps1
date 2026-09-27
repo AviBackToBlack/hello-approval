@@ -14,67 +14,17 @@ $PublicKeyLeaf = 'github-signing.pub'
 $ExpectedKeyType = 'sk-ecdsa-sha2-nistp256@openssh.com'
 $OwnedKeys = @('gpg.format', 'gpg.ssh.program', 'user.signingkey')
 
-function Get-FileSha256 {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try { return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
-    finally { $sha.Dispose(); $stream.Dispose() }
-}
+function Ensure-TrustedDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$TrustedBase,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
 
-function Assert-RegularFile {
-    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Purpose)
-    if (-not [IO.Path]::IsPathRooted($Path)) { throw "$Purpose path must be absolute: $Path" }
-    $full = [IO.Path]::GetFullPath($Path)
-    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "$Purpose is missing: $full" }
-    $item = Get-Item -LiteralPath $full -Force
-    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "$Purpose must be a real non-reparse file: $full"
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $TrustedBase -Path $Path -ExpectedType Directory -AllowMissing)
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        [void][IO.Directory]::CreateDirectory($Path)
     }
-    return $full
-}
-
-function Assert-RealDirectory {
-    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Purpose)
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { throw "$Purpose is missing: $Path" }
-    $item = Get-Item -LiteralPath $Path -Force
-    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "$Purpose must be a real non-reparse directory: $Path"
-    }
-}
-
-function Ensure-RealDirectory {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    if (Test-Path -LiteralPath $Path) {
-        Assert-RealDirectory -Path $Path -Purpose 'hello-approval Git configuration directory'
-        return
-    }
-    [void][IO.Directory]::CreateDirectory($Path)
-    Assert-RealDirectory -Path $Path -Purpose 'hello-approval Git configuration directory'
-}
-
-function Assert-PinnedRuntimeSurface {
-    param([Parameter(Mandatory = $true)][string]$RuntimeRoot, [Parameter(Mandatory = $true)][object]$Pin)
-    Assert-RealDirectory -Path $RuntimeRoot -Purpose 'Pinned runtime root'
-    $rootItems = @(Get-ChildItem -LiteralPath $RuntimeRoot -Force)
-    if ($rootItems.Count -ne 1 -or $rootItems[0].Name -cne 'bin' -or -not $rootItems[0].PSIsContainer -or ($rootItems[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "Pinned runtime root surface must contain exactly one real bin directory: $RuntimeRoot"
-    }
-    $bin = Join-Path $RuntimeRoot 'bin'
-    $required = @($Pin.installation_policy.installed_files)
-    $items = @(Get-ChildItem -LiteralPath $bin -Force)
-    $names = @($items | ForEach-Object { $_.Name })
-    if ($names.Count -ne $required.Count) { throw "Pinned runtime bin surface differs from installed_files: $bin" }
-    foreach ($name in $required) {
-        if (-not ($names -ccontains $name)) { throw "Pinned runtime bin surface is missing exact file '$name': $bin" }
-        $pinFile = $Pin.files | Where-Object { $_.name -ceq $name -and $_.policy.disposition -eq 'required' } | Select-Object -First 1
-        if ($null -eq $pinFile) { throw "Required runtime file '$name' has no required provenance record." }
-        $path = Assert-RegularFile -Path (Join-Path $bin $name) -Purpose "Pinned $name"
-        $item = Get-Item -LiteralPath $path -Force
-        if ($item.Length -ne [int64]$pinFile.size_bytes -or (Get-FileSha256 -Path $path) -ne ([string]$pinFile.sha256).ToLowerInvariant()) {
-            throw "Pinned runtime file does not match provenance: $path"
-        }
-    }
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $TrustedBase -Path $Path -ExpectedType Directory)
 }
 
 function Invoke-GitCommand {
@@ -165,19 +115,26 @@ $git = $gitCommand.Source
 [void](Invoke-GitCommand -Git $git -Arguments @('--version') -Context 'Git executable version probe')
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$pin = Get-Content -LiteralPath (Join-Path $repoRoot 'provenance\sshenc-v0.6.101.json') -Raw | ConvertFrom-Json
-if ($pin.schema -ne 'hello-approval/upstream-pin/v1') { throw "Unsupported provenance pin schema: $($pin.schema)" }
-if ($pin.installation_policy.allowed_distribution -ne 'zip-manual-placement') { throw 'Pinned distribution policy is not zip-manual-placement.' }
-$requiredByPolicy = @($pin.files | Where-Object { $_.policy.disposition -eq 'required' } | ForEach-Object { $_.name } | Sort-Object)
-$installedByPolicy = @($pin.installation_policy.installed_files | Sort-Object)
-if (@(Compare-Object -ReferenceObject $requiredByPolicy -DifferenceObject $installedByPolicy -CaseSensitive).Count -ne 0) {
-    throw 'Pin inconsistency: installed_files must exactly match files with policy.disposition=required.'
+$validationModulePath = Join-Path (Join-Path $repoRoot 'lib') 'HelloApproval.Validation.psm1'
+if (-not (Test-Path -LiteralPath $validationModulePath -PathType Leaf)) {
+    throw "Shared validation module is missing: $validationModulePath"
+}
+Import-Module $validationModulePath -Force -ErrorAction Stop
+
+$pinPath = Join-Path (Join-Path $repoRoot 'provenance') 'sshenc-v0.6.101.json'
+$pin = Get-Content -LiteralPath $pinPath -Raw | ConvertFrom-Json
+[void](Assert-HelloApprovalPinPolicy -Pin $pin)
+if ($pin.installation_policy.allowed_distribution -ne 'zip-manual-placement') {
+    throw 'Pinned distribution policy is not zip-manual-placement.'
 }
 
-$runtimeRoot = Join-Path $env:LOCALAPPDATA ("hello-approval\runtime\sshenc\{0}" -f [string]$pin.upstream.release_tag)
-Assert-PinnedRuntimeSurface -RuntimeRoot $runtimeRoot -Pin $pin
-$sshencPath = [IO.Path]::GetFullPath((Join-Path $runtimeRoot 'bin\sshenc.exe'))
-$publicKeyPath = Assert-RegularFile -Path (Join-Path $env:USERPROFILE ".ssh\$PublicKeyLeaf") -Purpose 'Git signing public key'
+$runtimeBase = Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA 'hello-approval') 'runtime') 'sshenc'
+$runtimeRoot = Join-Path $runtimeBase ([string]$pin.upstream.release_tag)
+$runtimeValidation = Assert-HelloApprovalPinnedRuntime -RuntimeRoot $runtimeRoot -Pin $pin -TrustedBase $env:LOCALAPPDATA
+$sshencPath = [IO.Path]::GetFullPath((Join-Path $runtimeValidation.BinPath 'sshenc.exe'))
+
+$publicKeyPath = Join-Path (Join-Path $env:USERPROFILE '.ssh') $PublicKeyLeaf
+$publicKeyPath = Assert-HelloApprovalTrustedPath -TrustedBase $env:USERPROFILE -Path $publicKeyPath -ExpectedType File
 $keyLines = @(Get-Content -LiteralPath $publicKeyPath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 if ($keyLines.Count -ne 1) { throw "Signing public key must contain exactly one non-empty line: $publicKeyPath" }
 $keyParts = @($keyLines[0] -split '\s+')
@@ -186,10 +143,11 @@ if ($keyParts.Count -lt 2 -or $keyParts[0] -cne $ExpectedKeyType) {
 }
 
 $projectRoot = Join-Path $env:LOCALAPPDATA 'hello-approval'
-Assert-RealDirectory -Path $projectRoot -Purpose 'hello-approval project root'
+[void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $projectRoot -ExpectedType Directory)
 $gitRoot = Join-Path $projectRoot 'git'
-if (Test-Path -LiteralPath $gitRoot) { Assert-RealDirectory -Path $gitRoot -Purpose 'hello-approval Git configuration directory' }
+[void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $gitRoot -ExpectedType Directory -AllowMissing)
 $ownedConfig = Join-Path $gitRoot 'signing.gitconfig'
+[void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $ownedConfig -ExpectedType File -AllowMissing)
 $ownedConfigGit = $ownedConfig -replace '\\', '/'
 $globalWritePath = Get-GlobalWritePath -Git $git
 
@@ -197,7 +155,7 @@ $existingOwned = Test-Path -LiteralPath $ownedConfig -PathType Leaf
 $preserveCommitSigning = $false
 $preserveTagSigning = $false
 if ($existingOwned) {
-    $ownedConfig = Assert-RegularFile -Path $ownedConfig -Purpose 'hello-approval owned Git config'
+    $ownedConfig = Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $ownedConfig -ExpectedType File
     $schemaValues = @(Get-GitValues -Git $git -Scope file -File $ownedConfig -Key 'hello-approval.schema')
     if ($schemaValues.Count -ne 1 -or $schemaValues[0] -ne $Schema) {
         throw "Refusing to replace unowned Git config fragment: $ownedConfig"
@@ -238,8 +196,9 @@ if ($ourIncludeCount -gt 1) { throw "Global Git config contains duplicate hello-
 
 if (-not $PSCmdlet.ShouldProcess($ownedConfig, 'Install/update hello-approval Git signing config and global include')) { return }
 
-Ensure-RealDirectory -Path $gitRoot
+Ensure-TrustedDirectory -TrustedBase $env:LOCALAPPDATA -Path $gitRoot
 $stage = Join-Path $gitRoot ('.signing.gitconfig.staging.{0}' -f [Guid]::NewGuid().ToString('N'))
+[void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $stage -ExpectedType File -AllowMissing)
 $ownedExisted = Test-Path -LiteralPath $ownedConfig
 $ownedBytes = if ($ownedExisted) { [IO.File]::ReadAllBytes($ownedConfig) } else { $null }
 $globalExisted = Test-Path -LiteralPath $globalWritePath
@@ -252,6 +211,8 @@ try {
     Set-ConfigValue -Git $git -File $stage -Key 'user.signingkey' -Value $desired['user.signingkey']
     if ($EnableCommitSigning -or $preserveCommitSigning) { Set-ConfigValue -Git $git -File $stage -Key 'commit.gpgsign' -Value 'true' }
     if ($EnableTagSigning -or $preserveTagSigning) { Set-ConfigValue -Git $git -File $stage -Key 'tag.gpgsign' -Value 'true' }
+
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $stage -ExpectedType File)
 
     foreach ($key in @('hello-approval.schema') + $OwnedKeys) {
         $expected = if ($key -eq 'hello-approval.schema') { $Schema } else { $desired[$key] }
@@ -266,6 +227,7 @@ try {
     } else {
         [IO.File]::Move($stage, $ownedConfig)
     }
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $ownedConfig -ExpectedType File)
 
     if ($ourIncludeCount -eq 0) {
         [void](Invoke-GitCommand -Git $git -Arguments @('config', '--global', '--add', 'include.path', $ownedConfigGit) -Context 'Register hello-approval include.path in global Git config')
