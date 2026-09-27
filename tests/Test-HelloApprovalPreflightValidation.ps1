@@ -96,7 +96,7 @@ function New-Fixture {
     $sshenc=Join-Path $bin $sshencName
     $agent=Join-Path $bin $agentName
 
-    $stubExe = Join-Path $env:SystemRoot 'System32	ree.com'
+    $stubExe = Join-Path (Join-Path $env:SystemRoot 'System32') 'tree.com'
     if(-not (Test-Path -LiteralPath $stubExe -PathType Leaf)){
         throw "Synthetic preflight fixture requires Windows tree.com: $stubExe"
     }
