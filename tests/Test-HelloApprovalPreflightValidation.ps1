@@ -188,6 +188,14 @@ function Has-PinPolicyBlock($Result) {
     }).Count -gt 0
 }
 
+function Is-StructuredBlockedResult($Result) {
+    return (
+        $Result.ExitCode -eq 2 -and
+        [string]$Result.Json.schema -ceq 'hello-approval/preflight/v1' -and
+        [bool]$Result.Json.blocked
+    )
+}
+
 $root=Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-preflight-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($root)
 
@@ -233,7 +241,7 @@ try {
                     Fail ("Phase1 baseline accepts {0}" -f $case.Name) (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
                 }
             } else {
-                if(Has-RuntimeBlock $result){
+                if((Has-RuntimeBlock $result) -and (Is-StructuredBlockedResult $result)){
                     Pass ("hardened preflight rejects {0} with structured runtime BLOCK" -f $case.Name)
                 } else {
                     Fail ("hardened preflight rejects {0} with structured runtime BLOCK" -f $case.Name) (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
@@ -250,7 +258,7 @@ try {
                     Fail ("Phase1 baseline accepts {0}" -f $case.Name) (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
                 }
             } else {
-                if(Has-PinPolicyBlock $result){
+                if((Has-PinPolicyBlock $result) -and (Is-StructuredBlockedResult $result)){
                     Pass ("hardened preflight rejects {0} with structured pin BLOCK" -f $case.Name)
                 } else {
                     Fail ("hardened preflight rejects {0} with structured pin BLOCK" -f $case.Name) (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
