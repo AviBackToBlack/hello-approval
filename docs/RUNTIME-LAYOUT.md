@@ -232,3 +232,11 @@ HA-1.1 is complete when review establishes that:
 - the future agent invocation contract explicitly supplies `--socket`;
 - scripts are read-only or mutate only the project-owned runtime tree;
 - no task, agent process, credential, Git config, or SSH transport state is created/changed in this slice.
+
+### Phase 2 preflight validation contract
+
+The read-only preflight now delegates provenance-pin consistency and exact installed-runtime validation to the shared Phase 2 validation module.
+
+If the pinned runtime is absent, preflight preserves the existing non-blocking INFO result. If a present runtime fails shared validation, or the provenance pin is malformed, preflight converts the shared assertion failure into a structured BLOCK finding in the hello-approval/preflight/v1 result and exits 2 rather than treating the condition as an unclassified script failure.
+
+Distribution compatibility, environment/socket diagnostics, sshenc configuration discovery, stock ssh-agent observation, SSH config inspection, and Git diagnostics remain preflight-owned concerns outside the shared validator.
