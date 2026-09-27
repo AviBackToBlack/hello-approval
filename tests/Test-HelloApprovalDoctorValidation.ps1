@@ -19,6 +19,7 @@ $principal = 'synthetic@example.invalid'
 
 $script:Passed = 0
 $script:Failed = 0
+$script:FixtureJunctions = @()
 
 function Pass([string]$Name) { $script:Passed++; Write-Host "PASS  $Name" }
 function Fail([string]$Name,[string]$Message) { $script:Failed++; Write-Host "FAIL  $Name - $Message" }
@@ -47,6 +48,20 @@ function New-Junction {
         $ErrorActionPreference = $saved
     }
     if($rc -ne 0){ throw "mklink failed: $($out -join ' | ')" }
+    $script:FixtureJunctions += $Link
+}
+
+function Remove-FixtureJunctions {
+    foreach($link in @($script:FixtureJunctions | Sort-Object Length -Descending)) {
+        if(-not (Test-Path -LiteralPath $link)){ continue }
+        $saved = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            & cmd.exe /d /c rmdir "$link" 2>$null | Out-Null
+        } finally {
+            $ErrorActionPreference = $saved
+        }
+    }
 }
 
 function New-Fixture {
@@ -473,5 +488,6 @@ try {
     if($script:Failed -ne 0){exit 1}
     exit 0
 } finally {
+    Remove-FixtureJunctions
     Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
 }
