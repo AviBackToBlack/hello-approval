@@ -62,8 +62,15 @@ function New-Fixture {
     [void][IO.Directory]::CreateDirectory($profile)
 
     $keyBase=Join-Path $Root 'signing'
-    & $sshKeygen -q -t ed25519 -N '' -C synthetic -f $keyBase
-    if($LASTEXITCODE -ne 0){throw 'synthetic ssh-keygen failed'}
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = $sshKeygen
+    $psi.Arguments = '-q -t ed25519 -N "" -C synthetic -f "' + $keyBase + '"'
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $process = [Diagnostics.Process]::Start($psi)
+    $process.WaitForExit()
+    if($process.ExitCode -ne 0){throw 'synthetic ssh-keygen failed'}
+    $process.Dispose()
     $publicSource=$keyBase + '.pub'
     $pubParts=@(([IO.File]::ReadAllText($publicSource).Trim()) -split '\s+')
     if($pubParts.Count -lt 2){throw 'synthetic public key parse failed'}
