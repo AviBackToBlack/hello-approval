@@ -18,6 +18,44 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+# Bundle contract: keep the next pin assignment in this exact textual form; installer/Doctor/cleanup extract it literally.
+$ValidationModuleSha256 = '1b790cb30fa19ca7f73fdd511573d9a3b3d66b98a677309d33dcbc3db7949d1c'
+
+function Get-BootstrapFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
+}
+
+function Get-LfNormalizedFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $normalized = New-Object IO.MemoryStream
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        for ($i = 0; $i -lt $bytes.Length; $i++) {
+            if ($bytes[$i] -eq 13 -and ($i + 1) -lt $bytes.Length -and $bytes[$i + 1] -eq 10) {
+                $normalized.WriteByte(10)
+                $i++
+            } else {
+                $normalized.WriteByte($bytes[$i])
+            }
+        }
+        $normalized.Position = 0
+        return ([BitConverter]::ToString($sha.ComputeHash($normalized))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+        $normalized.Dispose()
+    }
+}
 
 function Resolve-ExistingRegularFile {
     param(
@@ -53,34 +91,22 @@ function Assert-ProjectLogDirectory {
         throw "LogDirectory must stay under the project-owned root '$projectRoot': $full"
     }
 
-    # Establish/verify the project root before traversing any requested child.
-    # Never create through an existing junction/symlink and reject a project
-    # root that is itself redirected.
-    if (-not (Test-Path -LiteralPath $projectRoot)) {
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $projectRoot -ExpectedType Directory -AllowMissing)
+    if (-not (Test-Path -LiteralPath $projectRoot -PathType Container)) {
         New-Item -ItemType Directory -Path $projectRoot | Out-Null
     }
-    $rootItem = Get-Item -LiteralPath $projectRoot -Force
-    if (-not $rootItem.PSIsContainer -or ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "Project-owned log root must be a real directory, not a reparse point: $projectRoot"
-    }
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $projectRoot -ExpectedType Directory)
 
     $relative = $full.Substring($prefix.Length)
     $parts = @($relative -split '[\\/]' | Where-Object { $_ -ne '' })
     $cursor = $projectRoot
     foreach ($part in $parts) {
         $next = Join-Path $cursor $part
-        if (Test-Path -LiteralPath $next) {
-            $item = Get-Item -LiteralPath $next -Force
-            if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-                throw "Project log path must use real directories, not reparse points: $next"
-            }
-        } else {
+        [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $next -ExpectedType Directory -AllowMissing)
+        if (-not (Test-Path -LiteralPath $next -PathType Container)) {
             New-Item -ItemType Directory -Path $next | Out-Null
-            $item = Get-Item -LiteralPath $next -Force
-            if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-                throw "Newly created project log path is not a real directory: $next"
-            }
         }
+        [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $next -ExpectedType Directory)
         $cursor = $next
     }
     return $full
@@ -131,6 +157,25 @@ try {
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
         throw 'LOCALAPPDATA is not available.'
     }
+    $installedModuleCandidate = Join-Path $PSScriptRoot 'HelloApproval.Validation.psm1'
+    $sourceModuleCandidate = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'lib') 'HelloApproval.Validation.psm1'
+    $usingInstalledValidationModule = Test-Path -LiteralPath $installedModuleCandidate -PathType Leaf
+    $validationModulePath = if ($usingInstalledValidationModule) {
+        $installedModuleCandidate
+    } else {
+        $sourceModuleCandidate
+    }
+    $validationModulePath = Resolve-ExistingRegularFile -Path $validationModulePath -Purpose 'hello-approval validation module'
+    $validationModuleHash = Get-BootstrapFileSha256 -Path $validationModulePath
+    if ($validationModuleHash -cne $ValidationModuleSha256) {
+        if (-not $usingInstalledValidationModule -and
+            (Get-LfNormalizedFileSha256 -Path $validationModulePath) -ceq $ValidationModuleSha256) {
+            throw "hello-approval validation module has stale CRLF working-tree bytes despite .gitattributes eol=lf. Refresh the tracked module before running the launcher; see docs/LAUNCHER.md: $validationModulePath"
+        }
+        throw "hello-approval validation module SHA-256 mismatch: $validationModulePath"
+    }
+    Import-Module $validationModulePath -Force -ErrorAction Stop
+
     if ([string]::IsNullOrWhiteSpace($LogDirectory)) {
         $LogDirectory = Join-Path $env:LOCALAPPDATA 'hello-approval\logs'
     }

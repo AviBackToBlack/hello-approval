@@ -340,6 +340,8 @@ try {
         $launcherHash = Get-FileSha256Local -Path $sourceLauncher
         $launcherVersionRoot = Join-Path $launcherRoot $launcherHash
         $installedLauncher = Join-Path $launcherVersionRoot 'Start-HelloApprovalAgent.ps1'
+        $installedValidationModule = Join-Path $launcherVersionRoot 'HelloApproval.Validation.psm1'
+        $validationModuleHash = Get-FileSha256Local -Path $sourceModule
         $launcherItems = @(if (Test-Path -LiteralPath $launcherVersionRoot -PathType Container) {
             Get-ChildItem -LiteralPath $launcherVersionRoot -Force
         })
@@ -348,12 +350,15 @@ try {
         })
         $taskAfterBoundary = Get-ScheduledTask -TaskName $taskName -TaskPath ([string][char]92) -ErrorAction SilentlyContinue
 
+        $launcherNames = @($launcherItems | ForEach-Object { $_.Name })
+        $launcherNonFiles = @($launcherItems | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
         $launcherExact = (
-            $launcherItems.Count -eq 1 -and
-            $launcherItems[0].Name -ceq 'Start-HelloApprovalAgent.ps1' -and
-            -not $launcherItems[0].PSIsContainer -and
-            -not ($launcherItems[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -and
-            (Get-FileSha256Local -Path $installedLauncher) -ceq $launcherHash
+            $launcherItems.Count -eq 2 -and
+            ($launcherNames -ccontains 'Start-HelloApprovalAgent.ps1') -and
+            ($launcherNames -ccontains 'HelloApproval.Validation.psm1') -and
+            $launcherNonFiles.Count -eq 0 -and
+            (Get-FileSha256Local -Path $installedLauncher) -ceq $launcherHash -and
+            (Get-FileSha256Local -Path $installedValidationModule) -ceq $validationModuleHash
         )
 
         if ($boundary.ExceptionMessage -ceq $boundary.Sentinel -and
@@ -366,6 +371,27 @@ try {
                 "exception={0} launcherExact={1} stagingCount={2} taskPresent={3}" -f
                 $boundary.ExceptionMessage,$launcherExact,$stagingItems.Count,($null -ne $taskAfterBoundary)
             )
+        }
+    }
+
+    if (-not $ExpectedPhase1) {
+        $staleRoot = Join-Path $root 'stale-eol'
+        [void][IO.Directory]::CreateDirectory($staleRoot)
+        $staleRepo = New-SyntheticRepo -Root $staleRoot
+        $staleLocal = Join-Path $staleRoot 'local'
+        $staleConfig = Join-Path $staleRoot 'config\config.toml'
+        [void](New-SyntheticRuntime -LocalAppData $staleLocal -PinPath $staleRepo.PinPath -ConfigPath $staleConfig)
+
+        $staleModule = Join-Path (Join-Path $staleRepo.Repo 'lib') 'HelloApproval.Validation.psm1'
+        $moduleText = [IO.File]::ReadAllText($staleModule)
+        $moduleText = [regex]::Replace($moduleText, "\r?\n", "`r`n")
+        [IO.File]::WriteAllText($staleModule,$moduleText,[Text.UTF8Encoding]::new($false))
+
+        $staleResult = Invoke-InstallerWhatIf -Installer $staleRepo.Installer -LocalAppData $staleLocal -ConfigPath $staleConfig
+        if ($staleResult.ExitCode -ne 0 -and (($staleResult.Output -join ' | ') -match 'stale CRLF working-tree bytes')) {
+            Pass 'installer diagnoses stale CRLF validation-module working tree'
+        } else {
+            Fail 'installer diagnoses stale CRLF validation-module working tree' ("rc={0} output={1}" -f $staleResult.ExitCode,($staleResult.Output -join ' | '))
         }
     }
 

@@ -61,6 +61,29 @@ function Get-FileSha256 {
     }
 }
 
+function Get-LfNormalizedFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $normalized = New-Object IO.MemoryStream
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        for ($i = 0; $i -lt $bytes.Length; $i++) {
+            if ($bytes[$i] -eq 13 -and ($i + 1) -lt $bytes.Length -and $bytes[$i + 1] -eq 10) {
+                $normalized.WriteByte(10)
+                $i++
+            } else {
+                $normalized.WriteByte($bytes[$i])
+            }
+        }
+        $normalized.Position = 0
+        return ([BitConverter]::ToString($sha.ComputeHash($normalized))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+        $normalized.Dispose()
+    }
+}
+
 function Test-PinnedRuntimeFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -462,36 +485,77 @@ try {
     $currentSid = $identity.User.Value
     $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $sourceLauncher = Join-Path $PSScriptRoot 'Start-HelloApprovalAgent.ps1'
+    $sourceValidationModule = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'lib') 'HelloApproval.Validation.psm1'
     $launcherHash = if (Test-Path -LiteralPath $sourceLauncher -PathType Leaf) { Get-FileSha256 -Path $sourceLauncher } else { $null }
-    $launcherVersionRoot = if ($null -ne $launcherHash) { Join-Path $projectRoot ("app\launcher\{0}" -f $launcherHash) } else { $null }
+    $validationModuleHash = if (Test-Path -LiteralPath $sourceValidationModule -PathType Leaf) { Get-FileSha256 -Path $sourceValidationModule } else { $null }
+    $launcherPinnedModuleHash = $null
+    if ($null -ne $launcherHash) {
+        try {
+            $launcherSource = Get-Content -LiteralPath $sourceLauncher -Raw
+            $pinMatches = [regex]::Matches($launcherSource, '(?m)^\$ValidationModuleSha256 = ''([a-f0-9]{64})''$')
+            if ($pinMatches.Count -eq 1) {
+                $launcherPinnedModuleHash = $pinMatches[0].Groups[1].Value
+            }
+        } catch {}
+    }
+
+    $launcherVersionRoot = if ($null -ne $launcherHash) { Join-Path (Join-Path (Join-Path $projectRoot 'app') 'launcher') $launcherHash } else { $null }
     $installedLauncher = if ($null -ne $launcherVersionRoot) { Join-Path $launcherVersionRoot 'Start-HelloApprovalAgent.ps1' } else { $null }
+    $installedValidationModule = if ($null -ne $launcherVersionRoot) { Join-Path $launcherVersionRoot 'HelloApproval.Validation.psm1' } else { $null }
     $launcherSurfaceValid = $false
 
-    if ($null -eq $launcherHash -or $null -eq $launcherVersionRoot -or $null -eq $installedLauncher) {
-        Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Cannot derive the content-addressed launcher path from the trusted source launcher.'
+    $sourceModuleStaleCrlf = $false
+    if ($null -ne $validationModuleHash -and
+        $null -ne $launcherPinnedModuleHash -and
+        $launcherPinnedModuleHash -cne $validationModuleHash) {
+        try {
+            $sourceModuleStaleCrlf = (Get-LfNormalizedFileSha256 -Path $sourceValidationModule) -ceq $launcherPinnedModuleHash
+        } catch {
+            $sourceModuleStaleCrlf = $false
+        }
+    }
+
+    if ($sourceModuleStaleCrlf) {
+        Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Repository validation module has stale CRLF working-tree bytes despite .gitattributes eol=lf. Refresh lib/HelloApproval.Validation.psm1 before installing; see docs/SCHEDULED-TASK.md.' -Value $sourceValidationModule
+    } elseif ($null -eq $launcherHash -or
+        $null -eq $validationModuleHash -or
+        $launcherPinnedModuleHash -cne $validationModuleHash -or
+        $null -eq $launcherVersionRoot -or
+        $null -eq $installedLauncher -or
+        $null -eq $installedValidationModule) {
+        Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Cannot derive a trusted content-addressed launcher bundle from the repository launcher and pinned validation module.'
     } elseif (-not (Test-Path -LiteralPath $launcherVersionRoot -PathType Container)) {
-        Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Installed content-addressed launcher digest directory is missing.' -Value $launcherVersionRoot
+        Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Installed content-addressed launcher bundle directory is missing.' -Value $launcherVersionRoot
     } else {
         try {
             $launcherRootItem = Get-Item -LiteralPath $launcherVersionRoot -Force
             $launcherItems = @(Get-ChildItem -LiteralPath $launcherVersionRoot -Force)
+            $launcherNames = @($launcherItems | ForEach-Object { $_.Name })
+            $nonFiles = @($launcherItems | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
             if (($launcherRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
-                $launcherItems.Count -ne 1 -or
-                $launcherItems[0].Name -cne 'Start-HelloApprovalAgent.ps1' -or
-                $launcherItems[0].PSIsContainer -or
-                ($launcherItems[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-                Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Installed content-addressed launcher surface is not exact.' -Value $launcherVersionRoot
+                $launcherItems.Count -ne 2 -or
+                -not ($launcherNames -ccontains 'Start-HelloApprovalAgent.ps1') -or
+                -not ($launcherNames -ccontains 'HelloApproval.Validation.psm1') -or
+                $nonFiles.Count -ne 0) {
+                Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Installed content-addressed launcher bundle surface is not exact.' -Value $launcherVersionRoot
             } else {
                 $installedLauncherHash = Get-FileSha256 -Path $installedLauncher
-                if ($installedLauncherHash -cne $launcherHash) {
-                    Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Installed launcher bytes do not match the digest directory/source launcher.' -Value ([pscustomobject]@{ expected = $launcherHash; actual = $installedLauncherHash; path = $installedLauncher })
+                $installedModuleHash = Get-FileSha256 -Path $installedValidationModule
+                if ($installedLauncherHash -cne $launcherHash -or $installedModuleHash -cne $validationModuleHash) {
+                    Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Installed launcher bundle bytes do not match the trusted repository sources.' -Value ([pscustomobject]@{
+                        launcherExpected = $launcherHash
+                        launcherActual = $installedLauncherHash
+                        moduleExpected = $validationModuleHash
+                        moduleActual = $installedModuleHash
+                        path = $launcherVersionRoot
+                    })
                 } else {
                     $launcherSurfaceValid = $true
-                    Add-Finding -Severity 'PASS' -Check 'launcher.cache' -Message 'Installed content-addressed launcher surface exists and matches the trusted source digest.' -Value $installedLauncher
+                    Add-Finding -Severity 'PASS' -Check 'launcher.cache' -Message 'Installed content-addressed launcher bundle matches the trusted launcher and pinned validation module.' -Value $launcherVersionRoot
                 }
             }
         } catch {
-            Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Could not validate installed content-addressed launcher surface.' -Value $_.Exception.Message
+            Add-Finding -Severity 'BLOCK' -Check 'launcher.cache' -Message 'Could not validate installed content-addressed launcher bundle.' -Value $_.Exception.Message
         }
     }
 

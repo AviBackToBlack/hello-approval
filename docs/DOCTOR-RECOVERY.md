@@ -48,7 +48,7 @@ It checks:
 
 - the pinned runtime, sshenc policy, launcher surface, and owned Scheduled Task contract through the existing installers;
 - exact Scheduled Task ownership and critical definition;
-- the content-addressed installed launcher digest surface, including exact file cardinality and SHA-256 parity with the trusted source launcher;
+- the content-addressed installed launcher bundle surface, including exact two-file cardinality, launcher SHA-256 parity, and validation-module parity with the SHA-256 pinned by the trusted source launcher;
 - task Running state, dedicated pipe presence, and the pinned `sshenc-agent.exe` process/command line;
 - prohibited `SSHENC_AGENT_SOCKET` overrides;
 - `SSH_AUTH_SOCK`, `GIT_SSH`, and `GIT_SSH_COMMAND` takeover fingerprints that point normal SSH transport at sshenc or the dedicated signing pipe;
@@ -113,7 +113,14 @@ The content-addressed launcher cache is also preserved by default. To remove it:
 .\scripts\Uninstall-HelloApproval.ps1 -RemoveLauncherCache
 ```
 
-Each cache directory must be a 64-hex digest directory containing exactly one regular `Start-HelloApprovalAgent.ps1` whose SHA-256 equals the directory name.
+Each cache directory must be a 64-hex launcher digest directory.
+
+Cleanup recognizes both historical formats:
+
+- legacy v1: exactly one regular `Start-HelloApprovalAgent.ps1` whose SHA-256 equals the directory name;
+- v2: exactly `Start-HelloApprovalAgent.ps1` plus `HelloApproval.Validation.psm1`; the launcher SHA-256 must equal the directory name and the module SHA-256 must equal the unique module hash pinned inside that launcher.
+
+Unknown/tampered cache surfaces fail closed instead of being recursively deleted.
 
 Both switches can be combined, and `-WhatIf` applies to them.
 
