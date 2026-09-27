@@ -38,6 +38,21 @@ foreach ($name in $repoRoutingEnvironmentNames) {
     Remove-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
 }
 
+$oldHarnessGitConfigEnvironment = @{}
+foreach ($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })) {
+    $oldHarnessGitConfigEnvironment[$entry.Name] = $entry.Value
+    Remove-Item -LiteralPath ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
+}
+$oldHarnessXdg = $env:XDG_CONFIG_HOME
+$oldHarnessTemplate = $env:GIT_TEMPLATE_DIR
+Remove-Item Env:XDG_CONFIG_HOME -ErrorAction SilentlyContinue
+Remove-Item Env:GIT_TEMPLATE_DIR -ErrorAction SilentlyContinue
+
+$harnessGitEnvironmentRoot = Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-local-verifier-git-env-' + [Guid]::NewGuid().ToString('N'))
+[void][IO.Directory]::CreateDirectory($harnessGitEnvironmentRoot)
+$env:GIT_CONFIG_GLOBAL = Join-Path $harnessGitEnvironmentRoot 'empty-global.gitconfig'
+$env:GIT_CONFIG_NOSYSTEM = '1'
+
 function Pass([string]$Name) { $script:Passed++; Write-Host "PASS  $Name" }
 function Fail([string]$Name,[string]$Message) { $script:Failed++; Write-Host "FAIL  $Name - $Message" }
 
@@ -128,7 +143,9 @@ function New-Fixture {
     [IO.File]::WriteAllText($physicalTrust,$trustText,[Text.UTF8Encoding]::new($false))
 
     $signedRepo=Join-Path $Root 'signed-repo'
-    git init $signedRepo | Out-Null
+    $emptyTemplate = Join-Path $Root 'empty-git-template'
+    [void][IO.Directory]::CreateDirectory($emptyTemplate)
+    git init --template=$emptyTemplate $signedRepo | Out-Null
     git -C $signedRepo config user.name Synthetic
     git -C $signedRepo config user.email synthetic@example.invalid
     git -C $signedRepo config gpg.format ssh
@@ -244,4 +261,22 @@ try {
     foreach ($name in $oldRepoRoutingEnvironment.Keys) {
         Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $oldRepoRoutingEnvironment[$name]
     }
+
+    foreach ($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })) {
+        Remove-Item -LiteralPath ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
+    }
+    foreach ($name in $oldHarnessGitConfigEnvironment.Keys) {
+        Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $oldHarnessGitConfigEnvironment[$name]
+    }
+    if ($null -eq $oldHarnessXdg) {
+        Remove-Item Env:XDG_CONFIG_HOME -ErrorAction SilentlyContinue
+    } else {
+        $env:XDG_CONFIG_HOME = $oldHarnessXdg
+    }
+    if ($null -eq $oldHarnessTemplate) {
+        Remove-Item Env:GIT_TEMPLATE_DIR -ErrorAction SilentlyContinue
+    } else {
+        $env:GIT_TEMPLATE_DIR = $oldHarnessTemplate
+    }
+    Remove-Item $harnessGitEnvironmentRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
