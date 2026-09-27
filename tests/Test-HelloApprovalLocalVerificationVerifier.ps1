@@ -19,6 +19,25 @@ $principal = 'synthetic@example.invalid'
 $script:Passed = 0
 $script:Failed = 0
 
+$repoRoutingEnvironmentNames = @(
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_COMMON_DIR',
+    'GIT_CEILING_DIRECTORIES',
+    'GIT_NAMESPACE'
+)
+$oldRepoRoutingEnvironment = @{}
+foreach ($name in $repoRoutingEnvironmentNames) {
+    $entry = Get-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
+    if ($null -ne $entry) {
+        $oldRepoRoutingEnvironment[$name] = $entry.Value
+    }
+    Remove-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
+}
+
 function Pass([string]$Name) { $script:Passed++; Write-Host "PASS  $Name" }
 function Fail([string]$Name,[string]$Message) { $script:Failed++; Write-Host "FAIL  $Name - $Message" }
 
@@ -219,4 +238,10 @@ try {
     exit 0
 } finally {
     Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+    foreach ($name in $repoRoutingEnvironmentNames) {
+        Remove-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
+    }
+    foreach ($name in $oldRepoRoutingEnvironment.Keys) {
+        Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $oldRepoRoutingEnvironment[$name]
+    }
 }
