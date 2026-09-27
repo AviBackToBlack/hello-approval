@@ -163,7 +163,24 @@ function New-Fixture {
         UserProfile=$profile
         GlobalConfig=Join-Path $Root 'global.gitconfig'
         Repo=$signedRepo
+        Commit=[string](git -C $signedRepo rev-parse HEAD)
     }
+}
+
+function New-UnsignedRepo {
+    param([string]$Root)
+
+    $repo=Join-Path $Root 'routing-poison-repo'
+    $emptyTemplate=Join-Path $Root 'routing-poison-empty-template'
+    [void][IO.Directory]::CreateDirectory($emptyTemplate)
+    git init --template=$emptyTemplate $repo | Out-Null
+    git -C $repo config user.name Synthetic
+    git -C $repo config user.email synthetic@example.invalid
+    [IO.File]::WriteAllText((Join-Path $repo 'poison.txt'),'routing poison',[Text.UTF8Encoding]::new($false))
+    git -C $repo add poison.txt
+    git -C $repo -c commit.gpgsign=false commit -m 'unsigned routing poison' | Out-Null
+    if($LASTEXITCODE -ne 0){throw 'unsigned routing-poison commit failed'}
+    return $repo
 }
 
 function Invoke-Verifier {
@@ -208,6 +225,42 @@ function Invoke-Verifier {
     }
 }
 
+function Invoke-VerifierInCurrentProcess {
+    param($Fixture)
+
+    $oldLocal=$env:LOCALAPPDATA
+    $oldProfile=$env:USERPROFILE
+    $oldHome=$env:HOME
+    $oldXdg=$env:XDG_CONFIG_HOME
+    $oldGitConfigEnvironment=@{}
+    foreach($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })){
+        $oldGitConfigEnvironment[$entry.Name]=$entry.Value
+    }
+    try {
+        foreach($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })){
+            Remove-Item -LiteralPath ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
+        }
+        Remove-Item Env:XDG_CONFIG_HOME -ErrorAction SilentlyContinue
+        $env:LOCALAPPDATA=$Fixture.LocalAppData
+        $env:USERPROFILE=$Fixture.UserProfile
+        $env:HOME=$Fixture.UserProfile
+        $env:GIT_CONFIG_GLOBAL=$Fixture.GlobalConfig
+        $env:GIT_CONFIG_NOSYSTEM='1'
+        & $Fixture.Verifier -Repo $Fixture.Repo -Commit HEAD -ExpectedPrincipal $principal *> $null
+    } finally {
+        foreach($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })){
+            Remove-Item -LiteralPath ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
+        }
+        foreach($name in $oldGitConfigEnvironment.Keys){
+            Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $oldGitConfigEnvironment[$name]
+        }
+        $env:LOCALAPPDATA=$oldLocal
+        $env:USERPROFILE=$oldProfile
+        if($null -eq $oldHome){Remove-Item Env:HOME -ErrorAction SilentlyContinue}else{$env:HOME=$oldHome}
+        if($null -eq $oldXdg){Remove-Item Env:XDG_CONFIG_HOME -ErrorAction SilentlyContinue}else{$env:XDG_CONFIG_HOME=$oldXdg}
+    }
+}
+
 $root=Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-local-verifier-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($root)
 
@@ -230,6 +283,63 @@ try {
                 Pass 'exact trusted paths verify a real synthetic SSH-signed commit'
             } else {
                 Fail 'exact trusted paths verify a real synthetic SSH-signed commit' ("rc={0} output={1}" -f $result.ExitCode,($result.Output -join ' | '))
+            }
+
+            $poisonRepo=New-UnsignedRepo -Root $fixtureRoot
+            $oldGitDir=$env:GIT_DIR
+            try {
+                $env:GIT_DIR=Join-Path $poisonRepo '.git'
+                $poisonedGitDirResult=Invoke-Verifier -Fixture $fixture
+            } finally {
+                if($null -eq $oldGitDir){Remove-Item Env:GIT_DIR -ErrorAction SilentlyContinue}else{$env:GIT_DIR=$oldGitDir}
+            }
+            if($poisonedGitDirResult.ExitCode -eq 0 -and (($poisonedGitDirResult.Output -join ' | ') -match [regex]::Escape($fixture.Commit.Trim()))){
+                Pass 'explicit Repo remains authoritative with poisoned GIT_DIR'
+            } else {
+                Fail 'explicit Repo remains authoritative with poisoned GIT_DIR' ("rc={0} output={1}" -f $poisonedGitDirResult.ExitCode,($poisonedGitDirResult.Output -join ' | '))
+            }
+
+            $oldGitWorkTree=$env:GIT_WORK_TREE
+            try {
+                $env:GIT_WORK_TREE=$poisonRepo
+                $poisonedWorkTreeResult=Invoke-Verifier -Fixture $fixture
+            } finally {
+                if($null -eq $oldGitWorkTree){Remove-Item Env:GIT_WORK_TREE -ErrorAction SilentlyContinue}else{$env:GIT_WORK_TREE=$oldGitWorkTree}
+            }
+            if($poisonedWorkTreeResult.ExitCode -eq 0 -and (($poisonedWorkTreeResult.Output -join ' | ') -match [regex]::Escape($fixture.Commit.Trim()))){
+                Pass 'explicit Repo remains authoritative with poisoned GIT_WORK_TREE'
+            } else {
+                Fail 'explicit Repo remains authoritative with poisoned GIT_WORK_TREE' ("rc={0} output={1}" -f $poisonedWorkTreeResult.ExitCode,($poisonedWorkTreeResult.Output -join ' | '))
+            }
+
+            $sentinelValues=@{}
+            foreach($name in $repoRoutingEnvironmentNames){
+                $sentinelValues[$name]="hello-approval-sentinel-$name"
+                Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $sentinelValues[$name]
+            }
+            $sameProcessError=$null
+            try {
+                try {
+                    Invoke-VerifierInCurrentProcess -Fixture $fixture
+                } catch {
+                    $sameProcessError=$_.Exception.Message
+                }
+                $changed=@()
+                foreach($name in $repoRoutingEnvironmentNames){
+                    $actual=(Get-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue).Value
+                    if($actual -cne $sentinelValues[$name]){
+                        $changed += ("{0}='{1}'" -f $name,$actual)
+                    }
+                }
+                if($null -eq $sameProcessError -and $changed.Count -eq 0){
+                    Pass 'repository-routing environment is restored after same-process verification'
+                } else {
+                    Fail 'repository-routing environment is restored after same-process verification' ("error={0} changed={1}" -f $sameProcessError,($changed -join ', '))
+                }
+            } finally {
+                foreach($name in $repoRoutingEnvironmentNames){
+                    Remove-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
+                }
             }
             continue
         }

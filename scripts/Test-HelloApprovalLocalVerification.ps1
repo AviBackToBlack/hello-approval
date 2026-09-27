@@ -12,6 +12,16 @@ $ErrorActionPreference = 'Stop'
 
 $ExpectedSchema = 'hello-approval/ha-1.5/v1'
 $ExpectedTrustMarker = "# $ExpectedSchema"
+$RepositoryRoutingEnvironmentNames = @(
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_COMMON_DIR',
+    'GIT_CEILING_DIRECTORIES',
+    'GIT_NAMESPACE'
+)
 
 function Invoke-GitCommand {
     param(
@@ -40,9 +50,39 @@ function Invoke-GitCommand {
     throw "$Context failed with exit $rc.$detail"
 }
 
+function Invoke-RepositoryGitCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$Git,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Context,
+        [switch]$AllowExitOne,
+        [switch]$IncludeStderr
+    )
+
+    $savedEnvironment = @{}
+    foreach ($name in $RepositoryRoutingEnvironmentNames) {
+        $entry = Get-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
+        if ($null -ne $entry) {
+            $savedEnvironment[$name] = [string]$entry.Value
+        }
+        Remove-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
+    }
+
+    try {
+        return Invoke-GitCommand -Git $Git -Arguments $Arguments -Context $Context -AllowExitOne:$AllowExitOne -IncludeStderr:$IncludeStderr
+    } finally {
+        foreach ($name in $RepositoryRoutingEnvironmentNames) {
+            Remove-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
+            if ($savedEnvironment.ContainsKey($name)) {
+                Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $savedEnvironment[$name]
+            }
+        }
+    }
+}
+
 function Get-GitOne {
     param([string]$Git, [string[]]$Arguments, [string]$Context)
-    $result = Invoke-GitCommand -Git $Git -Arguments $Arguments -Context $Context -AllowExitOne
+    $result = Invoke-RepositoryGitCommand -Git $Git -Arguments $Arguments -Context $Context -AllowExitOne
     if ($result.ExitCode -eq 1) { return $null }
     if ($result.Output.Count -ne 1) { throw "$Context returned $($result.Output.Count) values; expected exactly one." }
     return [string]$result.Output[0]
@@ -201,7 +241,7 @@ if (-not [string]::IsNullOrEmpty($ExpectedKeyFingerprint) -and $expectedFingerpr
     throw "Canonical public-key fingerprint '$expectedFingerprint' does not match externally expected fingerprint '$ExpectedKeyFingerprint'."
 }
 
-$verify = Invoke-GitCommand -Git $git -Arguments @('-c', "gpg.ssh.program=$verificationProgram", '-C', $repoPath, 'verify-commit', $resolvedCommit) -Context "git verify-commit $resolvedCommit" -AllowExitOne -IncludeStderr
+$verify = Invoke-RepositoryGitCommand -Git $git -Arguments @('-c', "gpg.ssh.program=$verificationProgram", '-C', $repoPath, 'verify-commit', $resolvedCommit) -Context "git verify-commit $resolvedCommit" -AllowExitOne -IncludeStderr
 if ($verify.ExitCode -ne 0) {
     $detail = if ($verify.Output.Count -gt 0) { $verify.Output -join ' | ' } else { '<no output>' }
     throw "git verify-commit rejected $resolvedCommit. $detail"
@@ -218,7 +258,7 @@ if ($signer -cne $principal) { throw "Git reported signer principal '$signer', e
 if ([string]::IsNullOrWhiteSpace($keyFingerprint)) { throw 'Git did not report a signing-key fingerprint.' }
 if ($keyFingerprint -cne $expectedFingerprint) { throw "Git reported signing-key fingerprint '$keyFingerprint', expected '$expectedFingerprint' from the canonical public key." }
 
-$display = Invoke-GitCommand -Git $git -Arguments @('-c', "gpg.ssh.program=$verificationProgram", '-C', $repoPath, 'log', '-1', '--show-signature', '--format=fuller', $resolvedCommit) -Context 'git log --show-signature' -IncludeStderr
+$display = Invoke-RepositoryGitCommand -Git $git -Arguments @('-c', "gpg.ssh.program=$verificationProgram", '-C', $repoPath, 'log', '-1', '--show-signature', '--format=fuller', $resolvedCommit) -Context 'git log --show-signature' -IncludeStderr
 
 Write-Host 'HA-1.5 LOCAL VERIFICATION: PASS' -ForegroundColor Green
 Write-Host "Commit: $resolvedCommit"

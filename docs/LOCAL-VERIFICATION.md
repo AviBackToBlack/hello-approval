@@ -85,6 +85,8 @@ The verifier requires all of the following:
 - Git `%GS` equals the explicit principal from the trust store;
 - Git reports a non-empty signing-key fingerprint.
 
+The explicit `-Repo` argument is authoritative even when the caller process has ambient Git repository-routing variables set. Around each child `git` invocation, the verifier temporarily clears `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_CEILING_DIRECTORIES`, and `GIT_NAMESPACE`, then restores their original presence and values in `finally`. This isolation is process-local and does not persistently mutate the caller environment. Other Git configuration inputs retain their existing semantics.
+
 `git verify-commit` is the authoritative command gate in this slice. Verification forces `gpg.ssh.program` process-locally to stock Windows OpenSSH `ssh-keygen.exe`. The verifier resolves two spellings when process bitness differs: one path visible to the current PowerShell process for the direct fingerprint probe, and one path visible to the resolved `git.exe`, whose PE machine type is read before invoking Git. On 64-bit Windows, a 32-bit process uses the `Sysnative` alias while a 64-bit process uses `System32`. It does not persistently change Git configuration. This keeps the local verifier independent from the `sshenc` signing broker used to create the signature.
 
 ## `git log --show-signature` is evidence, not the exit-code gate
