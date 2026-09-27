@@ -47,15 +47,21 @@ The task action working directory is the content-addressed launcher directory. T
 
 ## Content-addressed launcher deployment
 
-The repository launcher is installed beneath:
+The installed launcher bundle lives beneath:
 
 ```text
-%LOCALAPPDATA%\hello-approval\app\launcher\<sha256>\Start-HelloApprovalAgent.ps1
+%LOCALAPPDATA%\hello-approval\app\launcher\<launcher-sha256>\
+  Start-HelloApprovalAgent.ps1
+  HelloApproval.Validation.psm1
 ```
 
-The SHA-256 directory name is the hash of the script bytes. Existing digest directories must contain exactly one real, non-reparse launcher file with that hash. New launcher versions therefore get new immutable paths instead of overwriting a script that may currently be executing.
+The directory name remains the SHA-256 of `Start-HelloApprovalAgent.ps1`. The launcher source contains the exact SHA-256 of `HelloApproval.Validation.psm1`, so the launcher digest transitively commits the validation-module bytes as part of the bundle contract.
 
-Task updates switch the action to the new launcher hash-path. Old launcher hash directories are retained in HA-1.3 so rollback remains possible and uninstall does not make broad filesystem-cleanup decisions. General cleanup belongs to HA-1.7.
+The installer requires the repository launcher pin to match the repository validation module before any cache mutation. Existing v2 digest directories must contain exactly those two real, non-reparse files; the launcher bytes must hash to the directory name and the module bytes must match the hash pinned by the launcher. New launcher/module combinations therefore get new immutable paths instead of overwriting code that may currently be executing.
+
+Hash-bearing launcher/module files are forced to LF checkout bytes through `.gitattributes`, so the content-addressed identity does not depend on a machine's `core.autocrlf` setting.
+
+Task updates switch the action to the new launcher hash-path. Old launcher hash directories are retained so rollback remains possible and uninstall does not make broad filesystem-cleanup decisions. General cleanup belongs to HA-1.7.
 
 ## Runtime/config discovery
 

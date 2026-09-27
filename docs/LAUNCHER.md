@@ -16,6 +16,10 @@ and must not repoint ordinary SSH authentication.
 
 v0.1 uses `scripts/Start-HelloApprovalAgent.ps1`, launched by Windows PowerShell with `-WindowStyle Hidden`. The task invocation also uses process-local `-ExecutionPolicy RemoteSigned`; it does not change CurrentUser/LocalMachine execution policy. If an enforced MachinePolicy/UserPolicy still forbids the script, startup fails closed.
 
+Phase 2 path hardening gives the launcher one runtime code dependency: `HelloApproval.Validation.psm1`. The source launcher pins that module's SHA-256 before importing it. In a repository checkout the module is resolved from `lib/`; in the installed Scheduled Task bundle the exact same pinned module is a sibling of `Start-HelloApprovalAgent.ps1`. A missing, reparse, or hash-mismatched validation module fails with launcher exit `125` before module import or child creation.
+
+The launcher and validation module are hash-bearing artifacts and are forced to LF checkout bytes through `.gitattributes`, making their byte identity independent of Git `core.autocrlf`.
+
 The PowerShell process remains alive as the supervised process that Task Scheduler will own. It uses a small in-process P/Invoke helper to create `sshenc-agent.exe` with these Win32 semantics:
 
 1. create an unnamed Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`;
@@ -72,7 +76,7 @@ The launcher keeps three classes of logs under `%LOCALAPPDATA%\hello-approval\lo
 
 `SSHENC_LOG` is set only in the launcher process immediately before child creation, inherited by the child, and restored before a normal wrapper exit. No user- or machine-scope environment variable is written.
 
-The launcher refuses a log directory outside `%LOCALAPPDATA%\hello-approval`. It validates/creates the project root first, then walks each requested child directory one component at a time, refusing reparse points before traversing or creating through them.
+The launcher refuses a log directory outside `%LOCALAPPDATA%\hello-approval`. Containment remains launcher policy, while descendant existence/type/reparse validation is delegated to the shared validation module. The launcher validates/creates the project root first, then walks each requested child directory one component at a time, revalidating after each creation and refusing reparse points before traversal.
 
 Launcher-owned log leaves (`launcher.log`, `agent.stdout.log`, and `agent.stderr.log`) are opened with `FILE_FLAG_OPEN_REPARSE_POINT`, rejected if the opened object is a reparse point or has more than one hard link, and checked with `GetFinalPathNameByHandleW` against the requested path. The inherited stdout/stderr handles remain open without delete sharing while the child runs. `sshenc-operations.jsonl` is pre-created and validated with the same leaf checks before child creation, then closed because upstream `sshenc` must reopen/rotate that path itself. A same-user process replacing that path after launch is outside the v0.1 threat boundary; pretending otherwise would require breaking upstream rotation or changing upstream logging semantics.
 
