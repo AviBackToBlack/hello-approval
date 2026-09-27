@@ -158,7 +158,9 @@ try {
     )
 
     foreach($case in $cases){
-        $fixture=New-Fixture -Root (Join-Path $root ($case.Name -replace '[^A-Za-z0-9]+','-')) @case.Args
+        $fixtureRoot = Join-Path $root ($case.Name -replace '[^A-Za-z0-9]+','-')
+        $fixtureArgs = $case.Args
+        $fixture = New-Fixture -Root $fixtureRoot @fixtureArgs
         $result=Invoke-Verifier -Fixture $fixture
 
         if($case.Name -eq 'exact trusted paths'){
