@@ -95,8 +95,15 @@ function New-Fixture {
     $agentName=if($FileCaseMismatch){'SSHENC-AGENT.EXE'}else{'sshenc-agent.exe'}
     $sshenc=Join-Path $bin $sshencName
     $agent=Join-Path $bin $agentName
-    [IO.File]::WriteAllBytes($sshenc,[byte[]](1,2,3,4,5))
-    [IO.File]::WriteAllBytes($agent,[byte[]](9,8,7,6))
+
+    $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop
+    $gitRoot = Split-Path -Parent (Split-Path -Parent $gitCommand.Source)
+    $stubExe = Join-Path (Join-Path (Join-Path $gitRoot 'usr') 'bin') 'echo.exe'
+    if(-not (Test-Path -LiteralPath $stubExe -PathType Leaf)){
+        throw "Synthetic preflight fixture requires Git for Windows echo.exe: $stubExe"
+    }
+    Copy-Item -LiteralPath $stubExe -Destination $sshenc -Force
+    Copy-Item -LiteralPath $stubExe -Destination $agent -Force
 
     $unusedName=if($MalformedUnusedName){'..\unused.exe'}else{'unused.exe'}
     $pin=[ordered]@{
