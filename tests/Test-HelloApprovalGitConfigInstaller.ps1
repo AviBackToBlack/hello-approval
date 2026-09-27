@@ -102,6 +102,8 @@ function New-SyntheticFixture {
         [string]$Root,
         [switch]$RuntimeThroughJunction,
         [switch]$PublicKeyThroughJunction,
+        [switch]$GitRootThroughJunction,
+        [switch]$OwnedConfigReparseLeaf,
         [switch]$UnknownUnusedDisposition
     )
 
@@ -113,6 +115,16 @@ function New-SyntheticFixture {
 
     $projectRoot = Join-Path $local 'hello-approval'
     [void][IO.Directory]::CreateDirectory($projectRoot)
+
+    if ($GitRootThroughJunction) {
+        $gitRedirect = Join-Path $Root 'git-redirect'
+        New-Junction -Link (Join-Path $projectRoot 'git') -Target $gitRedirect
+    } elseif ($OwnedConfigReparseLeaf) {
+        $gitDir = Join-Path $projectRoot 'git'
+        [void][IO.Directory]::CreateDirectory($gitDir)
+        $ownedRedirect = Join-Path $Root 'owned-config-redirect'
+        New-Junction -Link (Join-Path $gitDir 'signing.gitconfig') -Target $ownedRedirect
+    }
 
     if ($RuntimeThroughJunction) {
         $redirect = Join-Path $Root 'runtime-redirect'
@@ -307,6 +319,24 @@ try {
             Pass 'hardened installer rejects signing public key through .ssh junction'
         } else {
             Fail 'hardened installer rejects signing public key through .ssh junction' ("rc={0} output={1}" -f $keyResult.ExitCode,($keyResult.Output -join ' | '))
+        }
+    }
+
+    if (-not $ExpectedPhase1) {
+        $gitJunction = New-SyntheticFixture -Root (Join-Path $root 'git-junction') -GitRootThroughJunction
+        $gitJunctionResult = Invoke-Installer -Fixture $gitJunction -WhatIf
+        if ($gitJunctionResult.ExitCode -ne 0 -and (($gitJunctionResult.Output -join ' | ') -match 'reparse point')) {
+            Pass 'hardened installer rejects project Git directory junction'
+        } else {
+            Fail 'hardened installer rejects project Git directory junction' ("rc={0} output={1}" -f $gitJunctionResult.ExitCode,($gitJunctionResult.Output -join ' | '))
+        }
+
+        $ownedLeaf = New-SyntheticFixture -Root (Join-Path $root 'owned-leaf-reparse') -OwnedConfigReparseLeaf
+        $ownedLeafResult = Invoke-Installer -Fixture $ownedLeaf -WhatIf
+        if ($ownedLeafResult.ExitCode -ne 0 -and (($ownedLeafResult.Output -join ' | ') -match 'reparse point')) {
+            Pass 'hardened installer rejects owned signing-config reparse leaf'
+        } else {
+            Fail 'hardened installer rejects owned signing-config reparse leaf' ("rc={0} output={1}" -f $ownedLeafResult.ExitCode,($ownedLeafResult.Output -join ' | '))
         }
     }
 

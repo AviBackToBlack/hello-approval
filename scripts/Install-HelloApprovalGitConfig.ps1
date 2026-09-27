@@ -173,8 +173,6 @@ if ($existingOwned) {
     if ($tagValues.Count -gt 1 -or ($tagValues.Count -eq 1 -and $tagValues[0] -ne 'true')) { throw 'Owned fragment has unexpected tag.gpgSign state.' }
     $preserveCommitSigning = $commitValues.Count -eq 1
     $preserveTagSigning = $tagValues.Count -eq 1
-} elseif (Test-Path -LiteralPath $ownedConfig) {
-    throw "Owned Git config path exists but is not a regular file: $ownedConfig"
 }
 
 $desired = @{
