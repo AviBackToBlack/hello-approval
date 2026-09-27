@@ -70,6 +70,8 @@ function New-Fixture {
         [switch]$ProjectRootThroughJunction,
         [switch]$RuntimeParentThroughJunction,
         [switch]$LauncherAppThroughJunction,
+        [switch]$GitRootThroughJunction,
+        [switch]$IncludeOwnedGit,
         [switch]$MalformedUnusedName,
         [switch]$RuntimeMissing,
         [switch]$ValidationModuleMissing,
@@ -181,6 +183,25 @@ function New-Fixture {
         [IO.File]::WriteAllBytes((Join-Path $digestDir 'Start-HelloApprovalAgent.ps1'),$launcherBytes)
     }
 
+
+    if($IncludeOwnedGit){
+        if($GitRootThroughJunction){
+            $gitLogical = Join-Path $physicalProject 'git'
+            $gitTarget = Join-Path $Root 'git-redirect'
+            New-Junction -Link $gitLogical -Target $gitTarget
+            $gitRootPhysical = $gitTarget
+        } else {
+            $gitRootPhysical = Join-Path $physicalProject 'git'
+            [void][IO.Directory]::CreateDirectory($gitRootPhysical)
+        }
+
+        $signingText = "[hello-approval]`r`n`tschema = hello-approval/ha-1.4/v1`r`n"
+        $verificationText = "[hello-approval]`r`n`tschema = hello-approval/ha-1.5/v1`r`n"
+        [IO.File]::WriteAllText((Join-Path $gitRootPhysical 'signing.gitconfig'),$signingText,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText((Join-Path $gitRootPhysical 'verification.gitconfig'),$verificationText,[Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText((Join-Path $gitRootPhysical 'allowed_signers'),"# hello-approval/ha-1.5/v1`r`n",[Text.UTF8Encoding]::new($false))
+    }
+
     $globalGit = Join-Path $Root 'global.gitconfig'
     [IO.File]::WriteAllText($globalGit,'',[Text.UTF8Encoding]::new($false))
 
@@ -241,6 +262,8 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-uninstall-' + [Gui
 
 try {
     $cases = @(
+        [pscustomobject]@{Name='exact owned Git/trust files';Args=@{IncludeOwnedGit=$true};Mode='default';Kind='accept'},
+        [pscustomobject]@{Name='owned Git directory junction';Args=@{IncludeOwnedGit=$true;GitRootThroughJunction=$true};Mode='default';Kind='ancestry-delta'},
         [pscustomobject]@{Name='exact runtime';Args=@{};Mode='runtime';Kind='accept'},
         [pscustomobject]@{Name='missing runtime';Args=@{RuntimeMissing=$true};Mode='runtime';Kind='accept'},
         [pscustomobject]@{Name='missing validation module';Args=@{ValidationModuleMissing=$true};Mode='runtime';Kind='module-migration'},
@@ -261,8 +284,10 @@ try {
         $fixture = New-Fixture -Root $fixtureRoot @fixtureArgs
         if($case.Mode -eq 'runtime'){
             $result = Invoke-UninstallWhatIf -Fixture $fixture -RemoveRuntime
-        } else {
+        } elseif($case.Mode -eq 'launcher') {
             $result = Invoke-UninstallWhatIf -Fixture $fixture -RemoveLauncherCache
+        } else {
+            $result = Invoke-UninstallWhatIf -Fixture $fixture
         }
 
         switch($case.Kind){
