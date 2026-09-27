@@ -13,6 +13,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $cleanupScript = Join-Path $repoRoot 'scripts\Uninstall-HelloApproval.ps1'
 $sourceLauncher = Join-Path $repoRoot 'scripts\Start-HelloApprovalAgent.ps1'
 $sourceModule = Join-Path $repoRoot 'lib\HelloApproval.Validation.psm1'
+Import-Module $sourceModule -Force -ErrorAction Stop
 
 $tokens = $null
 $errors = $null
@@ -25,7 +26,7 @@ if ($errors.Count -ne 0) {
     throw "Cleanup parser errors: $($errors -join ' | ')"
 }
 
-foreach ($name in @('Get-FileSha256','Assert-RealDirectory','Assert-LauncherCacheSurface')) {
+foreach ($name in @('Assert-LauncherCacheSurface')) {
     $node = $ast.Find({
         param($candidate)
         $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -64,7 +65,7 @@ function Add-LauncherDirectory {
         [switch]$TamperModule
     )
 
-    $launcherHash = Get-FileSha256 -Path $sourceLauncher
+    $launcherHash = Get-HelloApprovalFileSha256 -Path $sourceLauncher
     $dir = Join-Path $CacheRoot $launcherHash
     [void][IO.Directory]::CreateDirectory($dir)
 
@@ -87,7 +88,7 @@ try {
     $v1 = New-CacheRoot -Root (Join-Path $root 'v1')
     [void](Add-LauncherDirectory -CacheRoot $v1)
     try {
-        Assert-LauncherCacheSurface -LauncherRoot $v1
+        Assert-LauncherCacheSurface -LauncherRoot $v1 -TrustedBase $root
         Pass 'cleanup accepts legacy v1 one-file launcher cache'
     } catch {
         Fail 'cleanup accepts legacy v1 one-file launcher cache' $_.Exception.Message
@@ -96,7 +97,7 @@ try {
     $v2 = New-CacheRoot -Root (Join-Path $root 'v2')
     [void](Add-LauncherDirectory -CacheRoot $v2 -IncludeModule)
     try {
-        Assert-LauncherCacheSurface -LauncherRoot $v2
+        Assert-LauncherCacheSurface -LauncherRoot $v2 -TrustedBase $root
         Pass 'cleanup accepts valid v2 launcher bundle'
     } catch {
         Fail 'cleanup accepts valid v2 launcher bundle' $_.Exception.Message
@@ -105,7 +106,7 @@ try {
     $tampered = New-CacheRoot -Root (Join-Path $root 'tampered')
     [void](Add-LauncherDirectory -CacheRoot $tampered -IncludeModule -TamperModule)
     try {
-        Assert-LauncherCacheSurface -LauncherRoot $tampered
+        Assert-LauncherCacheSurface -LauncherRoot $tampered -TrustedBase $root
         Fail 'cleanup rejects tampered v2 validation module' 'expected throw'
     } catch {
         if ($_.Exception.Message -match 'validation module does not match launcher pin') {

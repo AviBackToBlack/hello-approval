@@ -26,44 +26,6 @@ function Test-WindowsPathEqual {
     return [string]::Equals($leftNormalized, $rightNormalized, [StringComparison]::OrdinalIgnoreCase)
 }
 
-function Get-FileSha256 {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try {
-        return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
-    } finally {
-        $sha.Dispose()
-        $stream.Dispose()
-    }
-}
-
-function Assert-RealDirectory {
-    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Purpose)
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-        throw "$Purpose is missing: $Path"
-    }
-    $item = Get-Item -LiteralPath $Path -Force
-    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "$Purpose must be a real non-reparse directory: $Path"
-    }
-}
-
-function Assert-RegularFile {
-    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Purpose)
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "$Purpose is missing: $Path"
-    }
-    $item = Get-Item -LiteralPath $Path -Force
-    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "$Purpose must be a real non-reparse file: $Path"
-    }
-    return [IO.Path]::GetFullPath($Path)
-}
-
 function Invoke-Git {
     param(
         [Parameter(Mandatory = $true)][string]$Git,
@@ -170,7 +132,7 @@ function Assert-OwnedGitFile {
     )
 
     if (-not (Test-Path -LiteralPath $Path)) { return }
-    $resolved = Assert-RegularFile -Path $Path -Purpose $Purpose
+    $resolved = Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $Path -ExpectedType File
     $schema = @(Get-GitFileOne -Git $Git -File $resolved -Key 'hello-approval.schema')
     if ($schema.Count -ne 1 -or $schema[0] -cne $ExpectedSchema) {
         throw "Refusing to remove unowned $Purpose; schema is '$($schema -join '; ')': $resolved"
@@ -181,78 +143,46 @@ function Assert-OwnedTrustFile {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     if (-not (Test-Path -LiteralPath $Path)) { return }
-    $resolved = Assert-RegularFile -Path $Path -Purpose 'hello-approval allowed_signers'
+    $resolved = Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $Path -ExpectedType File
     $lines = @(Get-Content -LiteralPath $resolved)
     if ($lines.Count -lt 1 -or $lines[0] -cne $TrustMarker) {
         throw "Refusing to remove unowned allowed_signers file: $resolved"
     }
 }
 
-function Assert-PinnedRuntimeSurface {
+function Assert-LauncherCacheSurface {
     param(
-        [Parameter(Mandatory = $true)][string]$RuntimeRoot,
-        [Parameter(Mandatory = $true)][object]$Pin
+        [Parameter(Mandatory = $true)][string]$LauncherRoot,
+        [Parameter(Mandatory = $true)][string]$TrustedBase
     )
 
-    Assert-RealDirectory -Path $RuntimeRoot -Purpose 'Pinned runtime root'
-    $rootItems = @(Get-ChildItem -LiteralPath $RuntimeRoot -Force)
-    if ($rootItems.Count -ne 1 -or $rootItems[0].Name -cne 'bin' -or -not $rootItems[0].PSIsContainer -or ($rootItems[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "Refusing runtime removal: pinned runtime root surface is not exact: $RuntimeRoot"
-    }
-
-    $bin = Join-Path $RuntimeRoot 'bin'
-    $required = @($Pin.installation_policy.installed_files)
-    $items = @(Get-ChildItem -LiteralPath $bin -Force)
-    $names = @($items | ForEach-Object { $_.Name })
-    if ($names.Count -ne $required.Count) {
-        throw "Refusing runtime removal: runtime bin file count does not match pin: $bin"
-    }
-
-    foreach ($name in $required) {
-        if (-not ($names -ccontains $name)) {
-            throw "Refusing runtime removal: required file '$name' is missing: $bin"
-        }
-        $pinFile = $Pin.files | Where-Object { $_.name -ceq $name -and $_.policy.disposition -eq 'required' } | Select-Object -First 1
-        if ($null -eq $pinFile) { throw "Refusing runtime removal: no required provenance record for $name." }
-
-        $path = Assert-RegularFile -Path (Join-Path $bin $name) -Purpose "Pinned $name"
-        $item = Get-Item -LiteralPath $path -Force
-        $hash = Get-FileSha256 -Path $path
-        if ($item.Length -ne [int64]$pinFile.size_bytes -or $hash -cne ([string]$pinFile.sha256).ToLowerInvariant()) {
-            throw "Refusing runtime removal: pinned runtime file differs from provenance: $path"
-        }
-    }
-}
-
-function Assert-LauncherCacheSurface {
-    param([Parameter(Mandatory = $true)][string]$LauncherRoot)
-
     if (-not (Test-Path -LiteralPath $LauncherRoot)) { return }
-    Assert-RealDirectory -Path $LauncherRoot -Purpose 'hello-approval launcher cache'
+    $LauncherRoot = Assert-HelloApprovalTrustedPath -TrustedBase $TrustedBase -Path $LauncherRoot -ExpectedType Directory
 
     foreach ($entry in @(Get-ChildItem -LiteralPath $LauncherRoot -Force)) {
         if (-not $entry.PSIsContainer -or ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $entry.Name -notmatch '^[a-f0-9]{64}$') {
             throw "Refusing launcher-cache removal: unexpected cache entry: $($entry.FullName)"
         }
 
-        $children = @(Get-ChildItem -LiteralPath $entry.FullName -Force)
+        $entryPath = Assert-HelloApprovalTrustedPath -TrustedBase $TrustedBase -Path $entry.FullName -ExpectedType Directory
+        $children = @(Get-ChildItem -LiteralPath $entryPath -Force)
         $names = @($children | ForEach-Object { $_.Name })
         $nonFiles = @($children | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
         if ($nonFiles.Count -ne 0 -or
             -not ($names -ccontains 'Start-HelloApprovalAgent.ps1') -or
             ($children.Count -ne 1 -and $children.Count -ne 2)) {
-            throw "Refusing launcher-cache removal: digest directory surface is not recognized: $($entry.FullName)"
+            throw "Refusing launcher-cache removal: digest directory surface is not recognized: $entryPath"
         }
 
-        $launcherPath = Join-Path $entry.FullName 'Start-HelloApprovalAgent.ps1'
-        $launcherHash = Get-FileSha256 -Path $launcherPath
+        $launcherPath = Assert-HelloApprovalTrustedPath -TrustedBase $TrustedBase -Path (Join-Path $entryPath 'Start-HelloApprovalAgent.ps1') -ExpectedType File
+        $launcherHash = Get-HelloApprovalFileSha256 -Path $launcherPath
         if ($launcherHash -cne $entry.Name) {
-            throw "Refusing launcher-cache removal: launcher bytes do not match digest directory: $($entry.FullName)"
+            throw "Refusing launcher-cache removal: launcher bytes do not match digest directory: $entryPath"
         }
 
         if ($children.Count -eq 2) {
             if (-not ($names -ccontains 'HelloApproval.Validation.psm1')) {
-                throw "Refusing launcher-cache removal: v2 launcher bundle has an unexpected second file: $($entry.FullName)"
+                throw "Refusing launcher-cache removal: v2 launcher bundle has an unexpected second file: $entryPath"
             }
 
             $launcherSource = Get-Content -LiteralPath $launcherPath -Raw
@@ -261,8 +191,8 @@ function Assert-LauncherCacheSurface {
                 throw "Refusing launcher-cache removal: v2 launcher does not contain exactly one validation-module SHA-256 pin: $launcherPath"
             }
 
-            $modulePath = Join-Path $entry.FullName 'HelloApproval.Validation.psm1'
-            $moduleHash = Get-FileSha256 -Path $modulePath
+            $modulePath = Assert-HelloApprovalTrustedPath -TrustedBase $TrustedBase -Path (Join-Path $entryPath 'HelloApproval.Validation.psm1') -ExpectedType File
+            $moduleHash = Get-HelloApprovalFileSha256 -Path $modulePath
             if ($moduleHash -cne $pinMatches[0].Groups[1].Value) {
                 throw "Refusing launcher-cache removal: validation module does not match launcher pin: $modulePath"
             }
@@ -278,6 +208,12 @@ foreach ($required in @('LOCALAPPDATA','USERPROFILE','SystemRoot')) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$validationModulePath = Join-Path (Join-Path $repoRoot 'lib') 'HelloApproval.Validation.psm1'
+if (-not (Test-Path -LiteralPath $validationModulePath -PathType Leaf)) {
+    throw "Shared validation module is missing: $validationModulePath"
+}
+Import-Module $validationModulePath -Force -ErrorAction Stop
+
 $projectRoot = Join-Path $env:LOCALAPPDATA 'hello-approval'
 $gitRoot = Join-Path $projectRoot 'git'
 $signingConfig = Join-Path $gitRoot 'signing.gitconfig'
@@ -287,7 +223,7 @@ $launcherRoot = Join-Path $projectRoot 'app\launcher'
 
 $pinPath = Join-Path $repoRoot 'provenance\sshenc-v0.6.101.json'
 $pin = Get-Content -LiteralPath $pinPath -Raw | ConvertFrom-Json
-if ($pin.schema -ne 'hello-approval/upstream-pin/v1') { throw "Unsupported provenance pin schema: $($pin.schema)" }
+[void](Assert-HelloApprovalPinPolicy -Pin $pin)
 $releaseTag = [string]$pin.upstream.release_tag
 $runtimeRoot = Join-Path $projectRoot ("runtime\sshenc\{0}" -f $releaseTag)
 
@@ -320,11 +256,19 @@ if ($null -ne $task) {
     }
 }
 
-if ($RemoveRuntime -and (Test-Path -LiteralPath $runtimeRoot)) {
-    Assert-PinnedRuntimeSurface -RuntimeRoot $runtimeRoot -Pin $pin
+if ($RemoveRuntime) {
+    if (Test-Path -LiteralPath $runtimeRoot) {
+        [void](Assert-HelloApprovalPinnedRuntime -RuntimeRoot $runtimeRoot -Pin $pin -TrustedBase $env:LOCALAPPDATA)
+    } else {
+        [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $runtimeRoot -ExpectedType Directory -AllowMissing)
+    }
 }
-if ($RemoveLauncherCache -and (Test-Path -LiteralPath $launcherRoot)) {
-    Assert-LauncherCacheSurface -LauncherRoot $launcherRoot
+if ($RemoveLauncherCache) {
+    if (Test-Path -LiteralPath $launcherRoot) {
+        Assert-LauncherCacheSurface -LauncherRoot $launcherRoot -TrustedBase $env:LOCALAPPDATA
+    } else {
+        [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $launcherRoot -ExpectedType Directory -AllowMissing)
+    }
 }
 
 $globalWritePath = Get-GlobalWritePath -Git $git
