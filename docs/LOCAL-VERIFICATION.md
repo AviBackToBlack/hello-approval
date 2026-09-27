@@ -98,3 +98,11 @@ With a cryptographically good SSH signature whose key is absent from the configu
 `allowed_signers` answers a local verifier policy question: which keys/principals this machine currently trusts for the Git SSH-signature namespace. It is not a universal revocation service and does not define hosting-platform policy.
 
 OpenSSH/Git also support validity windows and revocation files. Key replacement, validity/revocation lifecycle, and historical-signature semantics are intentionally handled in HA-1.7 rather than being implied by this slice.
+
+## Phase 2 trusted path boundaries
+
+Phase 2 treats USERPROFILE as the external trusted boundary for the canonical signing public key and LOCALAPPDATA as the external trusted boundary for the project-owned local-verification tree.
+
+Existing descendants below those boundaries must be real non-reparse components. The installer validates the hello-approval Git directory before creation and revalidates it afterward. The allowed_signers and verification.gitconfig staging leaves are validated before creation, revalidated after their writers create them, and the final destination files are revalidated after Move/Replace before include registration or later trusted reads.
+
+This migration does not redefine Git include.path identity, precedence, conflict handling, principal semantics, or rollback ownership. Those remain caller/Git concerns outside the shared trusted-path validator.
