@@ -106,3 +106,5 @@ Phase 2 treats USERPROFILE as the external trusted boundary for the canonical si
 Existing descendants below those boundaries must be real non-reparse components. The installer validates the hello-approval Git directory before creation and revalidates it afterward. The allowed_signers and verification.gitconfig staging leaves are validated before creation, revalidated after their writers create them, and the final destination files are revalidated after Move/Replace before include registration or later trusted reads.
 
 This migration does not redefine Git include.path identity, precedence, conflict handling, principal semantics, or rollback ownership. Those remain caller/Git concerns outside the shared trusted-path validator.
+
+The read-only local verifier uses the same Phase 2 trusted-base ancestry rules for the effective allowed_signers trust store under LOCALAPPDATA and the canonical signing public key under USERPROFILE. Repository/signature semantics remain verifier-owned; the shared path layer only establishes containment and non-reparse descendants before those files are consumed.

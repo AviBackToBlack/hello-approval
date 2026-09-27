@@ -131,6 +131,13 @@ if ($env:OS -ne 'Windows_NT') { throw 'Test-HelloApprovalLocalVerification.ps1 s
 if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw 'LOCALAPPDATA is not available.' }
 if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { throw 'USERPROFILE is not available.' }
 
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$validationModulePath = Join-Path (Join-Path $repoRoot 'lib') 'HelloApproval.Validation.psm1'
+if (-not (Test-Path -LiteralPath $validationModulePath -PathType Leaf)) {
+    throw "Shared validation module is missing: $validationModulePath"
+}
+Import-Module $validationModulePath -Force -ErrorAction Stop
+
 $gitCommand = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue
 if ($null -eq $gitCommand) { $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue }
 if ($null -eq $gitCommand) { throw 'Git was not found in PATH.' }
@@ -159,7 +166,7 @@ $expectedAllowedPath = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'hell
 if (-not (Test-WindowsPathEqual -Left $allowedPath -Right $expectedAllowedPath)) {
     throw "Target repository effective gpg.ssh.allowedSignersFile is not the hello-approval trust store. Effective='$allowedPath' Expected='$expectedAllowedPath'. A repo-local/includeIf override may be active."
 }
-$allowedPath = Assert-RegularFile -Path $allowedPath -Purpose 'hello-approval allowed_signers trust store'
+$allowedPath = Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $allowedPath -ExpectedType File
 
 $lines = @(Get-Content -LiteralPath $allowedPath)
 if ($lines.Count -lt 2 -or $lines[0] -cne $ExpectedTrustMarker) { throw "allowed_signers ownership/schema marker mismatch: $allowedPath" }
@@ -176,7 +183,8 @@ if (-not [string]::IsNullOrEmpty($ExpectedPrincipal) -and $principal -cne $Expec
     throw "Trust-store principal '$principal' does not match externally expected principal '$ExpectedPrincipal'."
 }
 
-$publicKey = Assert-RegularFile -Path (Join-Path $env:USERPROFILE '.ssh\github-signing.pub') -Purpose 'canonical Git signing public key'
+$publicKey = Join-Path (Join-Path $env:USERPROFILE '.ssh') 'github-signing.pub'
+$publicKey = Assert-HelloApprovalTrustedPath -TrustedBase $env:USERPROFILE -Path $publicKey -ExpectedType File
 $keyLines = @(Get-Content -LiteralPath $publicKey | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 if ($keyLines.Count -ne 1) { throw "Canonical signing public key must contain exactly one non-empty line: $publicKey" }
 $keyParts = @($keyLines[0] -split '\s+')
