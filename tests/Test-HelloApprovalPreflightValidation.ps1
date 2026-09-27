@@ -222,7 +222,7 @@ try {
     $cases=@(
         [pscustomobject]@{Name='exact runtime';Args=@{};Kind='exact'},
         [pscustomobject]@{Name='missing runtime';Args=@{RuntimeMissing=$true};Kind='missing'},
-        [pscustomobject]@{Name='missing validation module';Args=@{ValidationModuleMissing=$true};Kind='required-structured-block'},
+        [pscustomobject]@{Name='missing validation module';Args=@{ValidationModuleMissing=$true};Kind='module-migration'},
         [pscustomobject]@{Name='missing provenance pin';Args=@{PinMissing=$true};Kind='required-structured-block'},
         [pscustomobject]@{Name='Bin case-only directory mismatch';Args=@{BinCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='runtime file case-only mismatch';Args=@{FileCaseMismatch=$true};Kind='runtime-delta'},
@@ -253,6 +253,23 @@ try {
                 Pass 'missing runtime remains structured clean preflight INFO'
             } else {
                 Fail 'missing runtime remains structured clean preflight INFO' ("rc={0} blocked={1} findings={2}" -f $result.ExitCode,$result.Json.blocked,(($result.Json.findings | ConvertTo-Json -Depth 8) -join ''))
+            }
+            continue
+        }
+
+        if($case.Kind -eq 'module-migration'){
+            if($ExpectedPhase1){
+                if(Is-StructuredCleanResult $result){
+                    Pass 'Phase1 baseline does not require shared validation module'
+                } else {
+                    Fail 'Phase1 baseline does not require shared validation module' ("rc={0} blocked={1} findings={2}" -f $result.ExitCode,$result.Json.blocked,(($result.Json.findings | ConvertTo-Json -Depth 8) -join ''))
+                }
+            } else {
+                if(Is-StructuredBlockedResult $result){
+                    Pass 'hardened preflight requires shared validation module with structured BLOCK'
+                } else {
+                    Fail 'hardened preflight requires shared validation module with structured BLOCK' ("rc={0} blocked={1} findings={2}" -f $result.ExitCode,$result.Json.blocked,(($result.Json.findings | ConvertTo-Json -Depth 8) -join ''))
+                }
             }
             continue
         }
