@@ -374,6 +374,27 @@ try {
         }
     }
 
+    if (-not $ExpectedPhase1) {
+        $staleRoot = Join-Path $root 'stale-eol'
+        [void][IO.Directory]::CreateDirectory($staleRoot)
+        $staleRepo = New-SyntheticRepo -Root $staleRoot
+        $staleLocal = Join-Path $staleRoot 'local'
+        $staleConfig = Join-Path $staleRoot 'config\config.toml'
+        [void](New-SyntheticRuntime -LocalAppData $staleLocal -PinPath $staleRepo.PinPath -ConfigPath $staleConfig)
+
+        $staleModule = Join-Path (Join-Path $staleRepo.Repo 'lib') 'HelloApproval.Validation.psm1'
+        $moduleText = [IO.File]::ReadAllText($staleModule)
+        $moduleText = [regex]::Replace($moduleText, "\r?\n", "`r`n")
+        [IO.File]::WriteAllText($staleModule,$moduleText,[Text.UTF8Encoding]::new($false))
+
+        $staleResult = Invoke-InstallerWhatIf -Installer $staleRepo.Installer -LocalAppData $staleLocal -ConfigPath $staleConfig
+        if ($staleResult.ExitCode -ne 0 -and (($staleResult.Output -join ' | ') -match 'stale CRLF working-tree bytes')) {
+            Pass 'installer diagnoses stale CRLF validation-module working tree'
+        } else {
+            Fail 'installer diagnoses stale CRLF validation-module working tree' ("rc={0} output={1}" -f $staleResult.ExitCode,($staleResult.Output -join ' | '))
+        }
+    }
+
     # Exact-case behavior is already strict in Phase 1 and must remain strict.
     Rename-Item -LiteralPath (Join-Path $exactRuntime.Bin 'sshenc.exe') -NewName 'sshenc.tmp'
     Rename-Item -LiteralPath (Join-Path $exactRuntime.Bin 'sshenc.tmp') -NewName 'SSHENC.EXE'

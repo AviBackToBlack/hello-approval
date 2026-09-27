@@ -61,6 +61,21 @@ The installer requires the repository launcher pin to match the repository valid
 
 Hash-bearing launcher/module files are forced to LF checkout bytes through `.gitattributes`, so the content-addressed identity does not depend on a machine's `core.autocrlf` setting.
 
+### Existing Windows checkout created before LF pinning
+
+A checkout that already existed before the LF attributes were introduced can remain deceptively clean while still holding the unchanged validation module as CRLF bytes. Git applies the new `eol=lf` attribute but may not rewrite that unchanged working-tree file during a fast-forward update.
+
+The installer detects this exact case and fails closed with a stale-CRLF diagnostic. On a checkout with **no local changes to `lib/HelloApproval.Validation.psm1`**, refresh only that tracked file from the repository root:
+
+```powershell
+Remove-Item -LiteralPath .\lib\HelloApproval.Validation.psm1
+git restore --source=HEAD --worktree -- lib/HelloApproval.Validation.psm1
+git add --renormalize -- lib/HelloApproval.Validation.psm1
+git status --short -- lib/HelloApproval.Validation.psm1
+```
+
+The final status command must produce no output. A fresh clone is an equivalent remediation. Do not use this sequence when that file contains local work that must be preserved.
+
 Task updates switch the action to the new launcher hash-path. Old launcher hash directories are retained so rollback remains possible and uninstall does not make broad filesystem-cleanup decisions. General cleanup belongs to HA-1.7.
 
 ## Runtime/config discovery

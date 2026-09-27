@@ -20,6 +20,8 @@ Phase 2 path hardening gives the launcher one runtime code dependency: `HelloApp
 
 The launcher and validation module are hash-bearing artifacts and are forced to LF checkout bytes through `.gitattributes`, making their byte identity independent of Git `core.autocrlf`.
 
+An older Windows checkout created before those attributes can retain CRLF bytes for the unchanged module even after updating to this version. When the launcher is run directly from such a source checkout, it detects the CRLF-only mismatch and exits `125` with a specific stale-working-tree diagnostic rather than treating it as an unexplained hash mismatch. Use the one-file remediation documented in `SCHEDULED-TASK.md`, or use a fresh clone. Installed v2 bundle mismatches remain generic integrity failures; line-ending remediation applies only to source-checkout fallback.
+
 The PowerShell process remains alive as the supervised process that Task Scheduler will own. It uses a small in-process P/Invoke helper to create `sshenc-agent.exe` with these Win32 semantics:
 
 1. create an unnamed Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`;

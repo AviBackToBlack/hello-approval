@@ -26,6 +26,29 @@ function Get-FileSha256 {
     }
 }
 
+function Get-LfNormalizedFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $normalized = New-Object IO.MemoryStream
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        for ($i = 0; $i -lt $bytes.Length; $i++) {
+            if ($bytes[$i] -eq 13 -and ($i + 1) -lt $bytes.Length -and $bytes[$i + 1] -eq 10) {
+                $normalized.WriteByte(10)
+                $i++
+            } else {
+                $normalized.WriteByte($bytes[$i])
+            }
+        }
+        $normalized.Position = 0
+        return ([BitConverter]::ToString($sha.ComputeHash($normalized))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+        $normalized.Dispose()
+    }
+}
+
 function Assert-RegularFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -307,7 +330,14 @@ $launcherHash = Get-FileSha256 -Path $sourceLauncher
 $validationModuleHash = Get-FileSha256 -Path $sourceValidationModule
 $launcherSource = Get-Content -LiteralPath $sourceLauncher -Raw
 $validationPinMatches = [regex]::Matches($launcherSource, '(?m)^\$ValidationModuleSha256 = ''([a-f0-9]{64})''$')
-if ($validationPinMatches.Count -ne 1 -or $validationPinMatches[0].Groups[1].Value -cne $validationModuleHash) {
+if ($validationPinMatches.Count -ne 1) {
+    throw 'Repository launcher must contain exactly one validation-module SHA-256 pin in the documented bundle-contract format.'
+}
+$expectedValidationModuleHash = $validationPinMatches[0].Groups[1].Value
+if ($expectedValidationModuleHash -cne $validationModuleHash) {
+    if ((Get-LfNormalizedFileSha256 -Path $sourceValidationModule) -ceq $expectedValidationModuleHash) {
+        throw 'Repository validation module has stale CRLF working-tree bytes despite .gitattributes eol=lf. Refresh lib/HelloApproval.Validation.psm1 before installing; see docs/SCHEDULED-TASK.md.'
+    }
     throw 'Repository launcher validation-module SHA-256 pin does not match lib/HelloApproval.Validation.psm1.'
 }
 

@@ -219,6 +219,22 @@ try {
         Fail 'standalone launcher rejects tampered sibling validation module before import' ("rc={0} output={1}" -f $tamperedResult.ExitCode,($tamperedResult.Output -join ' | '))
     }
 
+    $staleSourceRoot = Join-Path $root 'stale-source-layout'
+    [void][IO.Directory]::CreateDirectory($staleSourceRoot)
+    $staleLauncher = New-SyntheticRepo -Root $staleSourceRoot
+    $staleModule = Join-Path (Join-Path (Join-Path $staleSourceRoot 'repo') 'lib') 'HelloApproval.Validation.psm1'
+    $staleText = [IO.File]::ReadAllText($staleModule)
+    $staleText = [regex]::Replace($staleText, "\r?\n", "`r`n")
+    [IO.File]::WriteAllText($staleModule,$staleText,[Text.UTF8Encoding]::new($false))
+    $staleLocal = Join-Path $root 'stale-source-local'
+    $staleLogs = Join-Path (Join-Path $staleLocal 'hello-approval') 'logs'
+    $staleResult = Invoke-Launcher -Launcher $staleLauncher -Agent $agent -Config $config -LocalAppData $staleLocal -LogDirectory $staleLogs
+    if ($staleResult.ExitCode -eq 125 -and (($staleResult.Output -join ' | ') -match 'stale CRLF working-tree bytes')) {
+        Pass 'source-layout launcher diagnoses stale CRLF validation-module working tree'
+    } else {
+        Fail 'source-layout launcher diagnoses stale CRLF validation-module working tree' ("rc={0} output={1}" -f $staleResult.ExitCode,($staleResult.Output -join ' | '))
+    }
+
     $equalLocal = Join-Path $root 'equal-local'
     $equalProject = Join-Path $equalLocal 'hello-approval'
     $equal = Invoke-Launcher -Launcher $launcher -Agent $agent -Config $config -LocalAppData $equalLocal -LogDirectory $equalProject
