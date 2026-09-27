@@ -34,35 +34,17 @@ function Test-WindowsPathEqual {
     return [string]::Equals($leftNormalized, $rightNormalized, [StringComparison]::OrdinalIgnoreCase)
 }
 
-function Assert-RegularFile {
-    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Purpose)
-    if (-not [IO.Path]::IsPathRooted($Path)) { throw "$Purpose path must be absolute: $Path" }
-    $full = [IO.Path]::GetFullPath($Path)
-    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "$Purpose is missing: $full" }
-    $item = Get-Item -LiteralPath $full -Force
-    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "$Purpose must be a real non-reparse file: $full"
-    }
-    return $full
-}
+function Ensure-TrustedDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$TrustedBase,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
 
-function Assert-RealDirectory {
-    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Purpose)
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { throw "$Purpose is missing: $Path" }
-    $item = Get-Item -LiteralPath $Path -Force
-    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "$Purpose must be a real non-reparse directory: $Path"
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $TrustedBase -Path $Path -ExpectedType Directory -AllowMissing)
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        [void][IO.Directory]::CreateDirectory($Path)
     }
-}
-
-function Ensure-RealDirectory {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    if (Test-Path -LiteralPath $Path) {
-        Assert-RealDirectory -Path $Path -Purpose 'hello-approval Git configuration directory'
-        return
-    }
-    [void][IO.Directory]::CreateDirectory($Path)
-    Assert-RealDirectory -Path $Path -Purpose 'hello-approval Git configuration directory'
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $TrustedBase -Path $Path -ExpectedType Directory)
 }
 
 function Invoke-GitCommand {
@@ -167,6 +149,13 @@ if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw 'LOCALAPPDATA is no
 if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { throw 'USERPROFILE is not available.' }
 Assert-ExactPrincipal -Value $Principal
 
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$validationModulePath = Join-Path (Join-Path $repoRoot 'lib') 'HelloApproval.Validation.psm1'
+if (-not (Test-Path -LiteralPath $validationModulePath -PathType Leaf)) {
+    throw "Shared validation module is missing: $validationModulePath"
+}
+Import-Module $validationModulePath -Force -ErrorAction Stop
+
 $gitCommand = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue
 if ($null -eq $gitCommand) { $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue }
 if ($null -eq $gitCommand) { throw 'Git was not found in PATH.' }
@@ -174,11 +163,12 @@ $git = $gitCommand.Source
 [void](Invoke-GitCommand -Git $git -Arguments @('--version') -Context 'Git executable version probe')
 
 $projectRoot = Join-Path $env:LOCALAPPDATA 'hello-approval'
-Assert-RealDirectory -Path $projectRoot -Purpose 'hello-approval project root'
+$projectRoot = Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $projectRoot -ExpectedType Directory
 $gitRoot = Join-Path $projectRoot 'git'
-if (Test-Path -LiteralPath $gitRoot) { Assert-RealDirectory -Path $gitRoot -Purpose 'hello-approval Git configuration directory' }
+$gitRoot = Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $gitRoot -ExpectedType Directory -AllowMissing
 
-$publicKeyPath = Assert-RegularFile -Path (Join-Path $env:USERPROFILE ".ssh\$PublicKeyLeaf") -Purpose 'Git signing public key'
+$publicKeyPath = Join-Path (Join-Path $env:USERPROFILE '.ssh') $PublicKeyLeaf
+$publicKeyPath = Assert-HelloApprovalTrustedPath -TrustedBase $env:USERPROFILE -Path $publicKeyPath -ExpectedType File
 $keyLines = @(Get-Content -LiteralPath $publicKeyPath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 if ($keyLines.Count -ne 1) { throw "Signing public key must contain exactly one non-empty line: $publicKeyPath" }
 $keyParts = @($keyLines[0] -split '\s+')
@@ -190,13 +180,15 @@ $keyBlob = [string]$keyParts[1]
 if ($keyBlob -notmatch '^[A-Za-z0-9+/]+={0,2}$') { throw "Signing public key blob is malformed: $publicKeyPath" }
 
 $trustFile = Join-Path $gitRoot 'allowed_signers'
+$trustFile = Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $trustFile -ExpectedType File -AllowMissing
 $verificationConfig = Join-Path $gitRoot 'verification.gitconfig'
-$verificationConfigGit = $verificationConfig -replace '\\', '/'
-$trustFileGit = $trustFile -replace '\\', '/'
+$verificationConfig = Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $verificationConfig -ExpectedType File -AllowMissing
+$verificationConfigGit = $verificationConfig.Replace([char]92, [char]47)
+$trustFileGit = $trustFile.Replace([char]92, [char]47)
 $globalWritePath = Get-GlobalWritePath -Git $git
 
 if (Test-Path -LiteralPath $trustFile) {
-    $trustFile = Assert-RegularFile -Path $trustFile -Purpose 'hello-approval allowed_signers trust store'
+    $trustFile = Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $trustFile -ExpectedType File
     $existingTrustLines = @(Get-Content -LiteralPath $trustFile)
     if ($existingTrustLines.Count -lt 1 -or $existingTrustLines[0] -cne $TrustMarker) {
         throw "Refusing to replace unowned allowed_signers trust store: $trustFile"
@@ -208,7 +200,7 @@ if (Test-Path -LiteralPath $trustFile) {
 }
 
 if (Test-Path -LiteralPath $verificationConfig) {
-    $verificationConfig = Assert-RegularFile -Path $verificationConfig -Purpose 'hello-approval verification Git config'
+    $verificationConfig = Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $verificationConfig -ExpectedType File
     $schemaValues = @(Get-GitValues -Git $git -Scope file -File $verificationConfig -Key 'hello-approval.schema')
     if ($schemaValues.Count -ne 1 -or $schemaValues[0] -ne $Schema) {
         throw "Refusing to replace unowned verification Git config fragment: $verificationConfig"
@@ -233,9 +225,11 @@ if ($ourIncludeCount -gt 1) { throw "Global Git config contains duplicate hello-
 if (-not $PSCmdlet.ShouldProcess($gitRoot, "Install/update hello-approval local verification trust mapping for principal '$Principal'")) { return }
 
 $gitRootExisted = Test-Path -LiteralPath $gitRoot -PathType Container
-Ensure-RealDirectory -Path $gitRoot
+Ensure-TrustedDirectory -TrustedBase $env:LOCALAPPDATA -Path $gitRoot
 $trustStage = Join-Path $gitRoot ('.allowed_signers.staging.{0}' -f [Guid]::NewGuid().ToString('N'))
 $configStage = Join-Path $gitRoot ('.verification.gitconfig.staging.{0}' -f [Guid]::NewGuid().ToString('N'))
+[void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $trustStage -ExpectedType File -AllowMissing)
+[void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $configStage -ExpectedType File -AllowMissing)
 $globalSnapshot = Get-FileSnapshot -Path $globalWritePath
 $trustSnapshot = Get-FileSnapshot -Path $trustFile
 $configSnapshot = Get-FileSnapshot -Path $verificationConfig
@@ -243,11 +237,13 @@ $configSnapshot = Get-FileSnapshot -Path $verificationConfig
 try {
     $trustText = "$TrustMarker`n$Principal namespaces=`"git`" $keyType $keyBlob`n"
     Write-Utf8NoBom -Path $trustStage -Text $trustText
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $trustStage -ExpectedType File)
     $renderedTrust = [IO.File]::ReadAllText($trustStage)
     if ($renderedTrust -cne $trustText) { throw 'Staged allowed_signers trust store failed byte/text verification.' }
 
     Set-ConfigValue -Git $git -File $configStage -Key 'hello-approval.schema' -Value $Schema
     Set-ConfigValue -Git $git -File $configStage -Key $OwnedKey -Value $trustFileGit
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $configStage -ExpectedType File)
     $schemaValues = @(Get-GitValues -Git $git -Scope file -File $configStage -Key 'hello-approval.schema')
     $pathValues = @(Get-GitValues -Git $git -Scope file -File $configStage -Key $OwnedKey)
     if ($schemaValues.Count -ne 1 -or $schemaValues[0] -ne $Schema) { throw 'Staged verification config failed schema verification.' }
@@ -255,6 +251,8 @@ try {
 
     Install-StagedFile -Stage $trustStage -Destination $trustFile
     Install-StagedFile -Stage $configStage -Destination $verificationConfig
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $trustFile -ExpectedType File)
+    [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $verificationConfig -ExpectedType File)
 
     if ($ourIncludeCount -eq 0) {
         [void](Invoke-GitCommand -Git $git -Arguments @('config', '--global', '--add', 'include.path', $verificationConfigGit) -Context 'Register hello-approval verification include.path in global Git config')
