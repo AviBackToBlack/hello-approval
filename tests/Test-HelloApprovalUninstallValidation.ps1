@@ -161,15 +161,17 @@ function New-Fixture {
 
     if($RuntimeMissing){ Remove-Item -LiteralPath $runtimeRoot -Recurse -Force }
 
+    $launcherRoot = $null
+    if($LauncherAppThroughJunction){
+        $appLogical = Join-Path $physicalProject 'app'
+        $appTarget = Join-Path $Root 'app-redirect'
+        New-Junction -Link $appLogical -Target $appTarget
+        $launcherRoot = Join-Path $appTarget 'launcher'
+    } elseif($IncludeLauncher){
+        $launcherRoot = Join-Path (Join-Path $physicalProject 'app') 'launcher'
+    }
+
     if($IncludeLauncher){
-        if($LauncherAppThroughJunction){
-            $appLogical = Join-Path $physicalProject 'app'
-            $appTarget = Join-Path $Root 'app-redirect'
-            New-Junction -Link $appLogical -Target $appTarget
-            $launcherRoot = Join-Path $appTarget 'launcher'
-        } else {
-            $launcherRoot = Join-Path (Join-Path $physicalProject 'app') 'launcher'
-        }
         [void][IO.Directory]::CreateDirectory($launcherRoot)
         $launcherBytes = [Text.Encoding]::UTF8.GetBytes("Write-Host 'synthetic launcher'`r`n")
         $sha = [Security.Cryptography.SHA256]::Create()
@@ -246,9 +248,11 @@ try {
         [pscustomobject]@{Name='runtime file case-only mismatch';Args=@{FileCaseMismatch=$true};Mode='runtime';Kind='reject'},
         [pscustomobject]@{Name='hello-approval project-root junction';Args=@{ProjectRootThroughJunction=$true};Mode='runtime';Kind='ancestry-delta'},
         [pscustomobject]@{Name='runtime parent junction';Args=@{RuntimeParentThroughJunction=$true};Mode='runtime';Kind='ancestry-delta'},
+        [pscustomobject]@{Name='missing runtime below runtime-parent junction';Args=@{RuntimeParentThroughJunction=$true;RuntimeMissing=$true};Mode='runtime';Kind='ancestry-delta'},
         [pscustomobject]@{Name='malformed unused pin leaf name';Args=@{MalformedUnusedName=$true};Mode='runtime';Kind='pin-delta'},
         [pscustomobject]@{Name='exact launcher cache';Args=@{IncludeLauncher=$true};Mode='launcher';Kind='accept'},
-        [pscustomobject]@{Name='launcher app-directory junction';Args=@{IncludeLauncher=$true;LauncherAppThroughJunction=$true};Mode='launcher';Kind='ancestry-delta'}
+        [pscustomobject]@{Name='launcher app-directory junction';Args=@{IncludeLauncher=$true;LauncherAppThroughJunction=$true};Mode='launcher';Kind='ancestry-delta'},
+        [pscustomobject]@{Name='missing launcher below app-directory junction';Args=@{LauncherAppThroughJunction=$true};Mode='launcher';Kind='ancestry-delta'}
     )
 
     foreach($case in $cases){
