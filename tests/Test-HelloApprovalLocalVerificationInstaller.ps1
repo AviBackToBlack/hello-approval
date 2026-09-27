@@ -85,6 +85,7 @@ function New-Fixture {
     param(
         [string]$Root,
         [switch]$PublicKeyThroughJunction,
+        [switch]$ProjectRootThroughJunction,
         [switch]$GitRootThroughJunction,
         [switch]$TrustFileReparseLeaf,
         [switch]$VerificationConfigReparseLeaf
@@ -97,7 +98,11 @@ function New-Fixture {
     [void][IO.Directory]::CreateDirectory($profile)
 
     $projectRoot = Join-Path $local 'hello-approval'
-    [void][IO.Directory]::CreateDirectory($projectRoot)
+    if ($ProjectRootThroughJunction) {
+        New-Junction -Link $projectRoot -Target (Join-Path $Root 'project-redirect')
+    } else {
+        [void][IO.Directory]::CreateDirectory($projectRoot)
+    }
 
     if ($GitRootThroughJunction) {
         New-Junction -Link (Join-Path $projectRoot 'git') -Target (Join-Path $Root 'git-redirect')
@@ -145,10 +150,18 @@ function Invoke-Installer {
     $oldLocal = $env:LOCALAPPDATA
     $oldProfile = $env:USERPROFILE
     $oldHome = $env:HOME
-    $oldGlobal = $env:GIT_CONFIG_GLOBAL
-    $oldNoSystem = $env:GIT_CONFIG_NOSYSTEM
+    $oldXdg = $env:XDG_CONFIG_HOME
+    $oldGitConfigEnvironment = @{}
+    foreach ($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })) {
+        $oldGitConfigEnvironment[$entry.Name] = $entry.Value
+    }
 
     try {
+        foreach ($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })) {
+            Remove-Item -LiteralPath ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
+        }
+        Remove-Item Env:XDG_CONFIG_HOME -ErrorAction SilentlyContinue
+
         $env:LOCALAPPDATA = $Fixture.LocalAppData
         $env:USERPROFILE = $Fixture.UserProfile
         $env:HOME = $Fixture.UserProfile
@@ -177,11 +190,17 @@ function Invoke-Installer {
             Output = @($output)
         }
     } finally {
+        foreach ($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })) {
+            Remove-Item -LiteralPath ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
+        }
+        foreach ($name in $oldGitConfigEnvironment.Keys) {
+            Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $oldGitConfigEnvironment[$name]
+        }
+
         $env:LOCALAPPDATA = $oldLocal
         $env:USERPROFILE = $oldProfile
         if ($null -eq $oldHome) { Remove-Item Env:HOME -ErrorAction SilentlyContinue } else { $env:HOME = $oldHome }
-        if ($null -eq $oldGlobal) { Remove-Item Env:GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue } else { $env:GIT_CONFIG_GLOBAL = $oldGlobal }
-        if ($null -eq $oldNoSystem) { Remove-Item Env:GIT_CONFIG_NOSYSTEM -ErrorAction SilentlyContinue } else { $env:GIT_CONFIG_NOSYSTEM = $oldNoSystem }
+        if ($null -eq $oldXdg) { Remove-Item Env:XDG_CONFIG_HOME -ErrorAction SilentlyContinue } else { $env:XDG_CONFIG_HOME = $oldXdg }
     }
 }
 
@@ -256,6 +275,14 @@ try {
     }
 
     if (-not $ExpectedPhase1) {
+        $projectJunction = New-Fixture -Root (Join-Path $root 'project-junction') -ProjectRootThroughJunction
+        $projectJunctionResult = Invoke-Installer -Fixture $projectJunction -WhatIf
+        if ($projectJunctionResult.ExitCode -ne 0 -and (($projectJunctionResult.Output -join ' | ') -match 'reparse point')) {
+            Pass 'hardened installer rejects hello-approval project-root junction'
+        } else {
+            Fail 'hardened installer rejects hello-approval project-root junction' ("rc={0} output={1}" -f $projectJunctionResult.ExitCode,($projectJunctionResult.Output -join ' | '))
+        }
+
         $gitJunction = New-Fixture -Root (Join-Path $root 'git-junction') -GitRootThroughJunction
         $gitJunctionResult = Invoke-Installer -Fixture $gitJunction -WhatIf
         if ($gitJunctionResult.ExitCode -ne 0 -and (($gitJunctionResult.Output -join ' | ') -match 'reparse point')) {
