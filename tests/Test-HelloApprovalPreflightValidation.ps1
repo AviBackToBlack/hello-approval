@@ -96,11 +96,9 @@ function New-Fixture {
     $sshenc=Join-Path $bin $sshencName
     $agent=Join-Path $bin $agentName
 
-    $gitCommand = Get-Command git -CommandType Application -ErrorAction Stop
-    $gitRoot = Split-Path -Parent (Split-Path -Parent $gitCommand.Source)
-    $stubExe = Join-Path (Join-Path (Join-Path $gitRoot 'usr') 'bin') 'echo.exe'
+    $stubExe = Join-Path $env:SystemRoot 'System32	ree.com'
     if(-not (Test-Path -LiteralPath $stubExe -PathType Leaf)){
-        throw "Synthetic preflight fixture requires Git for Windows echo.exe: $stubExe"
+        throw "Synthetic preflight fixture requires Windows tree.com: $stubExe"
     }
     Copy-Item -LiteralPath $stubExe -Destination $sshenc -Force
     Copy-Item -LiteralPath $stubExe -Destination $agent -Force
