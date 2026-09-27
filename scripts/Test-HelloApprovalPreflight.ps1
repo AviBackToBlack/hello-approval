@@ -128,7 +128,6 @@ try {
     Add-Finding -Severity 'INFO' -Check 'runtime.root' -Message 'Expected pinned runtime root.' -Value $runtimeRoot
     Add-Finding -Severity 'INFO' -Check 'agent.pipe' -Message 'Expected dedicated signing pipe.' -Value $expectedPipe
 
-    $requiredFiles = @($pin.installation_policy.installed_files)
     $runtimeVerified = $false
     if (Test-Path -LiteralPath $runtimeRoot) {
         try {

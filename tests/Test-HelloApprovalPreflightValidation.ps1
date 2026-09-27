@@ -51,7 +51,9 @@ function New-Fixture {
         [switch]$FileCaseMismatch,
         [switch]$ProjectRootThroughJunction,
         [switch]$MalformedUnusedName,
-        [switch]$RuntimeMissing
+        [switch]$RuntimeMissing,
+        [switch]$ValidationModuleMissing,
+        [switch]$PinMissing
     )
 
     $tool=Join-Path $Root 'tool'
@@ -62,7 +64,9 @@ function New-Fixture {
     [void][IO.Directory]::CreateDirectory($lib)
     [void][IO.Directory]::CreateDirectory($prov)
     Copy-Item $sourcePreflight (Join-Path $scripts 'Test-HelloApprovalPreflight.ps1') -Force
-    Copy-Item $sourceModule (Join-Path $lib 'HelloApproval.Validation.psm1') -Force
+    if(-not $ValidationModuleMissing){
+        Copy-Item $sourceModule (Join-Path $lib 'HelloApproval.Validation.psm1') -Force
+    }
 
     $local=Join-Path $Root 'local'
     $app=Join-Path $Root 'roaming'
@@ -124,7 +128,9 @@ function New-Fixture {
             installed_files=@('sshenc.exe','sshenc-agent.exe')
         }
     }
-    [IO.File]::WriteAllText((Join-Path $prov 'sshenc-v0.6.101.json'),($pin|ConvertTo-Json -Depth 20),[Text.UTF8Encoding]::new($false))
+    if(-not $PinMissing){
+        [IO.File]::WriteAllText((Join-Path $prov 'sshenc-v0.6.101.json'),($pin|ConvertTo-Json -Depth 20),[Text.UTF8Encoding]::new($false))
+    }
     if($RuntimeMissing){
         Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
     }
@@ -196,6 +202,14 @@ function Is-StructuredBlockedResult($Result) {
     )
 }
 
+function Is-StructuredCleanResult($Result) {
+    return (
+        $Result.ExitCode -eq 0 -and
+        [string]$Result.Json.schema -ceq 'hello-approval/preflight/v1' -and
+        -not [bool]$Result.Json.blocked
+    )
+}
+
 $root=Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-preflight-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($root)
 
@@ -203,6 +217,8 @@ try {
     $cases=@(
         [pscustomobject]@{Name='exact runtime';Args=@{};Kind='exact'},
         [pscustomobject]@{Name='missing runtime';Args=@{RuntimeMissing=$true};Kind='missing'},
+        [pscustomobject]@{Name='missing validation module';Args=@{ValidationModuleMissing=$true};Kind='required-structured-block'},
+        [pscustomobject]@{Name='missing provenance pin';Args=@{PinMissing=$true};Kind='required-structured-block'},
         [pscustomobject]@{Name='Bin case-only directory mismatch';Args=@{BinCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='runtime file case-only mismatch';Args=@{FileCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='hello-approval project-root junction';Args=@{ProjectRootThroughJunction=$true};Kind='runtime-delta'},
@@ -216,19 +232,31 @@ try {
         $result=Invoke-Preflight -Fixture $fixture
 
         if($case.Kind -eq 'exact'){
-            if(-not (Has-RuntimeBlock $result) -and -not (Has-PinPolicyBlock $result)){
-                Pass 'exact runtime/pin surface has no runtime or pin BLOCK findings'
+            if((Is-StructuredCleanResult $result) -and -not (Has-RuntimeBlock $result) -and -not (Has-PinPolicyBlock $result)){
+                Pass 'exact runtime/pin surface returns structured clean preflight result'
             } else {
-                Fail 'exact runtime/pin surface has no runtime or pin BLOCK findings' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
+                Fail 'exact runtime/pin surface returns structured clean preflight result' ("rc={0} blocked={1} findings={2}" -f $result.ExitCode,$result.Json.blocked,(($result.Json.findings | ConvertTo-Json -Depth 8) -join ''))
             }
             continue
         }
 
         if($case.Kind -eq 'missing'){
-            if(-not (Has-RuntimeBlock $result)){
-                Pass 'missing runtime remains non-blocking preflight INFO'
+            $runtimeInfo = @($result.Json.findings | Where-Object {
+                $_.severity -eq 'INFO' -and $_.check -eq 'runtime.surface'
+            }).Count -eq 1
+            if((Is-StructuredCleanResult $result) -and $runtimeInfo -and -not (Has-RuntimeBlock $result)){
+                Pass 'missing runtime remains structured clean preflight INFO'
             } else {
-                Fail 'missing runtime remains non-blocking preflight INFO' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
+                Fail 'missing runtime remains structured clean preflight INFO' ("rc={0} blocked={1} findings={2}" -f $result.ExitCode,$result.Json.blocked,(($result.Json.findings | ConvertTo-Json -Depth 8) -join ''))
+            }
+            continue
+        }
+
+        if($case.Kind -eq 'required-structured-block'){
+            if(Is-StructuredBlockedResult $result){
+                Pass ("{0} returns structured BLOCK result" -f $case.Name)
+            } else {
+                Fail ("{0} returns structured BLOCK result" -f $case.Name) ("rc={0} blocked={1} findings={2}" -f $result.ExitCode,$result.Json.blocked,(($result.Json.findings | ConvertTo-Json -Depth 8) -join ''))
             }
             continue
         }
