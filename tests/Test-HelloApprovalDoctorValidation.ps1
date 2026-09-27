@@ -129,21 +129,23 @@ function New-Fixture {
     }
     [IO.File]::WriteAllText($publicKey,($keyType + ' AAAATESTKEY synthetic'),[Text.UTF8Encoding]::new($false))
 
-    $sourceLauncher = Join-Path $scripts 'Start-HelloApprovalAgent.ps1'
-    $sourceValidationModule = Join-Path $lib 'HelloApproval.Validation.psm1'
-    $launcherHash = Get-FileSha256Local $sourceLauncher
-    $appRoot = Join-Path $physicalProject 'app'
-    if($LauncherAppThroughJunction){
-        $appTarget = Join-Path $Root 'app-redirect'
-        New-Junction -Link (Join-Path $logicalProject 'app') -Target $appTarget
-        $launcherBase = Join-Path $appTarget 'launcher'
-    } else {
-        $launcherBase = Join-Path $appRoot 'launcher'
+    if(-not $ValidationModuleMissing){
+        $sourceLauncher = Join-Path $scripts 'Start-HelloApprovalAgent.ps1'
+        $sourceValidationModule = Join-Path $lib 'HelloApproval.Validation.psm1'
+        $launcherHash = Get-FileSha256Local $sourceLauncher
+        $appRoot = Join-Path $physicalProject 'app'
+        if($LauncherAppThroughJunction){
+            $appTarget = Join-Path $Root 'app-redirect'
+            New-Junction -Link (Join-Path $logicalProject 'app') -Target $appTarget
+            $launcherBase = Join-Path $appTarget 'launcher'
+        } else {
+            $launcherBase = Join-Path $appRoot 'launcher'
+        }
+        $launcherVersionRoot = Join-Path $launcherBase $launcherHash
+        [void][IO.Directory]::CreateDirectory($launcherVersionRoot)
+        Copy-Item -LiteralPath $sourceLauncher -Destination (Join-Path $launcherVersionRoot 'Start-HelloApprovalAgent.ps1') -Force
+        Copy-Item -LiteralPath $sourceValidationModule -Destination (Join-Path $launcherVersionRoot 'HelloApproval.Validation.psm1') -Force
     }
-    $launcherVersionRoot = Join-Path $launcherBase $launcherHash
-    [void][IO.Directory]::CreateDirectory($launcherVersionRoot)
-    Copy-Item -LiteralPath $sourceLauncher -Destination (Join-Path $launcherVersionRoot 'Start-HelloApprovalAgent.ps1') -Force
-    Copy-Item -LiteralPath $sourceValidationModule -Destination (Join-Path $launcherVersionRoot 'HelloApproval.Validation.psm1') -Force
 
     $runtimeBase = Join-Path (Join-Path $physicalProject 'runtime') 'sshenc'
     $runtimeRoot = Join-Path $runtimeBase 'v-test'
