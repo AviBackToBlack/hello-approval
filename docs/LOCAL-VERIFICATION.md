@@ -70,6 +70,8 @@ Verify a commit in the target repository with:
 
 `-ExpectedPrincipal` and `-ExpectedKeyFingerprint` are optional for ad-hoc inspection, but production/acceptance gates should supply both so expected principal and key identity come from external operator intent rather than from the trust store/canonical-key files being tested.
 
+`-Repo` is the repository-identity boundary for verification. Before every Git subprocess, the verifier ignores ambient Git repository-routing variables (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_CEILING_DIRECTORIES`, and `GIT_NAMESPACE`) so they cannot redirect the selected repository, object database, or worktree. The caller's environment is restored after each invocation and is not persistently modified.
+
 The verifier requires all of the following:
 
 - target repository effective `gpg.format=ssh`;

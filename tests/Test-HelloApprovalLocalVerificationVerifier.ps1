@@ -167,7 +167,12 @@ function New-Fixture {
 }
 
 function Invoke-Verifier {
-    param($Fixture)
+    param(
+        $Fixture,
+        [hashtable]$RepoRoutingEnvironment = @{},
+        [string]$Commit = 'HEAD',
+        [switch]$InProcess
+    )
 
     $oldLocal=$env:LOCALAPPDATA
     $oldProfile=$env:USERPROFILE
@@ -176,6 +181,14 @@ function Invoke-Verifier {
     $oldGitConfigEnvironment=@{}
     foreach($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })){
         $oldGitConfigEnvironment[$entry.Name]=$entry.Value
+    }
+    $oldRepoRoutingEnvironment=@{}
+    foreach($name in $RepoRoutingEnvironment.Keys){
+        $entry=Get-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
+        $oldRepoRoutingEnvironment[$name]=[pscustomobject]@{
+            Present=($null -ne $entry)
+            Value=$(if($null -ne $entry){$entry.Value}else{$null})
+        }
     }
     try {
         foreach($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })){
@@ -187,13 +200,35 @@ function Invoke-Verifier {
         $env:HOME=$Fixture.UserProfile
         $env:GIT_CONFIG_GLOBAL=$Fixture.GlobalConfig
         $env:GIT_CONFIG_NOSYSTEM='1'
+        foreach($name in $RepoRoutingEnvironment.Keys){
+            Set-Item -LiteralPath ("Env:{0}" -f $name) -Value ([string]$RepoRoutingEnvironment[$name])
+        }
         $saved=$ErrorActionPreference
+        $environmentRestored=$null
         try {
             $ErrorActionPreference='Continue'
-            $out=@(& $ps51 -NoProfile -ExecutionPolicy Bypass -File $Fixture.Verifier -Repo $Fixture.Repo -Commit HEAD -ExpectedPrincipal $principal 2>&1 | ForEach-Object {[string]$_})
-            $rc=$LASTEXITCODE
+            if($InProcess){
+                try {
+                    $out=@(& $Fixture.Verifier -Repo $Fixture.Repo -Commit $Commit -ExpectedPrincipal $principal *>&1 | ForEach-Object {[string]$_})
+                    $rc=0
+                } catch {
+                    $rc=1
+                    $out=@([string]$_)
+                }
+                $environmentRestored=$true
+                foreach($name in $RepoRoutingEnvironment.Keys){
+                    $entry=Get-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
+                    if($null -eq $entry -or [string]$entry.Value -cne [string]$RepoRoutingEnvironment[$name]){
+                        $environmentRestored=$false
+                        break
+                    }
+                }
+            } else {
+                $out=@(& $ps51 -NoProfile -ExecutionPolicy Bypass -File $Fixture.Verifier -Repo $Fixture.Repo -Commit $Commit -ExpectedPrincipal $principal 2>&1 | ForEach-Object {[string]$_})
+                $rc=$LASTEXITCODE
+            }
         } finally {$ErrorActionPreference=$saved}
-        return [pscustomobject]@{ExitCode=$rc;Output=@($out)}
+        return [pscustomobject]@{ExitCode=$rc;Output=@($out);EnvironmentRestored=$environmentRestored}
     } finally {
         foreach($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })){
             Remove-Item -LiteralPath ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
@@ -201,11 +236,34 @@ function Invoke-Verifier {
         foreach($name in $oldGitConfigEnvironment.Keys){
             Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $oldGitConfigEnvironment[$name]
         }
+        foreach($name in $RepoRoutingEnvironment.Keys){
+            Remove-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
+            $old=$oldRepoRoutingEnvironment[$name]
+            if($old.Present){
+                Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $old.Value
+            }
+        }
         $env:LOCALAPPDATA=$oldLocal
         $env:USERPROFILE=$oldProfile
         if($null -eq $oldHome){Remove-Item Env:HOME -ErrorAction SilentlyContinue}else{$env:HOME=$oldHome}
         if($null -eq $oldXdg){Remove-Item Env:XDG_CONFIG_HOME -ErrorAction SilentlyContinue}else{$env:XDG_CONFIG_HOME=$oldXdg}
     }
+}
+
+function New-VictimRepo {
+    param([string]$Root)
+
+    $victim=Join-Path $Root 'victim-repo'
+    $emptyTemplate=Join-Path $Root 'victim-empty-git-template'
+    [void][IO.Directory]::CreateDirectory($emptyTemplate)
+    git init --template=$emptyTemplate $victim | Out-Null
+    git -C $victim config user.name Victim
+    git -C $victim config user.email victim@example.invalid
+    [IO.File]::WriteAllText((Join-Path $victim 'victim.txt'),'victim',[Text.UTF8Encoding]::new($false))
+    git -C $victim add victim.txt
+    git -C $victim commit --no-gpg-sign -m 'victim commit' | Out-Null
+    if($LASTEXITCODE -ne 0){throw 'victim commit failed'}
+    return $victim
 }
 
 $root=Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-local-verifier-'+[guid]::NewGuid().ToString('N'))
@@ -247,6 +305,49 @@ try {
                 Fail ("hardened verifier rejects {0}" -f $case.Name) ("rc={0} output={1}" -f $result.ExitCode,($result.Output -join ' | '))
             }
         }
+    }
+
+    $routingRoot=Join-Path $root 'repository-routing'
+    $routingFixture=New-Fixture -Root $routingRoot
+    $victimRepo=New-VictimRepo -Root $routingRoot
+    $victimGitDir=Join-Path $victimRepo '.git'
+    $fullRoutingEnvironment=@{
+        GIT_DIR=$victimGitDir
+        GIT_WORK_TREE=$victimRepo
+        GIT_INDEX_FILE=Join-Path $victimGitDir 'index'
+        GIT_OBJECT_DIRECTORY=Join-Path $victimGitDir 'objects'
+        GIT_ALTERNATE_OBJECT_DIRECTORIES=Join-Path $victimGitDir 'objects'
+        GIT_COMMON_DIR=$victimGitDir
+        GIT_CEILING_DIRECTORIES=$victimRepo
+        GIT_NAMESPACE='hello-approval-victim'
+    }
+    $routingCases=@(
+        [pscustomobject]@{Name='poisoned GIT_DIR';Environment=@{GIT_DIR=$victimGitDir}},
+        [pscustomobject]@{Name='poisoned GIT_WORK_TREE';Environment=@{GIT_WORK_TREE=$victimRepo}},
+        [pscustomobject]@{Name='poisoned GIT_DIR + GIT_WORK_TREE';Environment=@{GIT_DIR=$victimGitDir;GIT_WORK_TREE=$victimRepo}},
+        [pscustomobject]@{Name='poisoned full repository-routing set';Environment=$fullRoutingEnvironment}
+    )
+    foreach($case in $routingCases){
+        $result=Invoke-Verifier -Fixture $routingFixture -RepoRoutingEnvironment $case.Environment
+        if($result.ExitCode -eq 0 -and (($result.Output -join ' | ') -match 'HA-1.5 LOCAL VERIFICATION: PASS')){
+            Pass ('production verifier isolates {0}' -f $case.Name)
+        } else {
+            Fail ('production verifier isolates {0}' -f $case.Name) ('rc={0} output={1}' -f $result.ExitCode,($result.Output -join ' | '))
+        }
+    }
+
+    $inProcessResult=Invoke-Verifier -Fixture $routingFixture -RepoRoutingEnvironment $fullRoutingEnvironment -InProcess
+    if($inProcessResult.ExitCode -eq 0 -and $inProcessResult.EnvironmentRestored){
+        Pass 'production verifier restores caller repository-routing environment byte-for-byte'
+    } else {
+        Fail 'production verifier restores caller repository-routing environment byte-for-byte' ('rc={0} restored={1} output={2}' -f $inProcessResult.ExitCode,$inProcessResult.EnvironmentRestored,($inProcessResult.Output -join ' | '))
+    }
+
+    $failedInProcessResult=Invoke-Verifier -Fixture $routingFixture -RepoRoutingEnvironment $fullRoutingEnvironment -InProcess -Commit 'hello-approval-definitely-missing-commit'
+    if($failedInProcessResult.ExitCode -ne 0 -and $failedInProcessResult.EnvironmentRestored){
+        Pass 'production verifier restores caller repository-routing environment after verification failure'
+    } else {
+        Fail 'production verifier restores caller repository-routing environment after verification failure' ('rc={0} restored={1} output={2}' -f $failedInProcessResult.ExitCode,$failedInProcessResult.EnvironmentRestored,($failedInProcessResult.Output -join ' | '))
     }
 
     Write-Host ''

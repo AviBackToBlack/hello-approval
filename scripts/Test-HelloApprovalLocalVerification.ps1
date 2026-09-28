@@ -13,6 +13,17 @@ $ErrorActionPreference = 'Stop'
 $ExpectedSchema = 'hello-approval/ha-1.5/v1'
 $ExpectedTrustMarker = "# $ExpectedSchema"
 
+$GitRepositoryRoutingEnvironmentNames = @(
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_COMMON_DIR',
+    'GIT_CEILING_DIRECTORIES',
+    'GIT_NAMESPACE'
+)
+
 function Invoke-GitCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Git,
@@ -21,8 +32,21 @@ function Invoke-GitCommand {
         [switch]$AllowExitOne,
         [switch]$IncludeStderr
     )
+    # git -C changes the working directory but does not override ambient repository-routing variables.
+    # Scrub them only while the child process runs, then restore the caller environment exactly.
+    $oldRepositoryRoutingEnvironment = @{}
+    foreach ($name in $GitRepositoryRoutingEnvironmentNames) {
+        $entry = Get-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
+        if ($null -ne $entry) {
+            $oldRepositoryRoutingEnvironment[$name] = [string]$entry.Value
+        }
+    }
+
     $saved = $ErrorActionPreference
     try {
+        foreach ($name in $GitRepositoryRoutingEnvironmentNames) {
+            Remove-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
+        }
         $ErrorActionPreference = 'Continue'
         if ($IncludeStderr) {
             $output = @(& $Git @Arguments 2>&1 | ForEach-Object { [string]$_ })
@@ -32,6 +56,12 @@ function Invoke-GitCommand {
         $rc = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $saved
+        foreach ($name in $GitRepositoryRoutingEnvironmentNames) {
+            Remove-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
+            if ($oldRepositoryRoutingEnvironment.ContainsKey($name)) {
+                Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $oldRepositoryRoutingEnvironment[$name]
+            }
+        }
     }
     if ($rc -eq 0 -or ($AllowExitOne -and $rc -eq 1)) {
         return [pscustomobject]@{ ExitCode = $rc; Output = $output }
