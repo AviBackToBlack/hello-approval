@@ -169,7 +169,7 @@ function New-Fixture {
 function Invoke-Verifier {
     param(
         $Fixture,
-        [hashtable]$RepoRoutingEnvironment = @{},
+        [hashtable]$AmbientGitEnvironment = @{},
         [string]$Commit = 'HEAD',
         [switch]$InProcess
     )
@@ -182,10 +182,10 @@ function Invoke-Verifier {
     foreach($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })){
         $oldGitConfigEnvironment[$entry.Name]=$entry.Value
     }
-    $oldRepoRoutingEnvironment=@{}
-    foreach($name in $RepoRoutingEnvironment.Keys){
+    $oldAmbientGitEnvironment=@{}
+    foreach($name in $AmbientGitEnvironment.Keys){
         $entry=Get-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
-        $oldRepoRoutingEnvironment[$name]=[pscustomobject]@{
+        $oldAmbientGitEnvironment[$name]=[pscustomobject]@{
             Present=($null -ne $entry)
             Value=$(if($null -ne $entry){$entry.Value}else{$null})
         }
@@ -200,8 +200,8 @@ function Invoke-Verifier {
         $env:HOME=$Fixture.UserProfile
         $env:GIT_CONFIG_GLOBAL=$Fixture.GlobalConfig
         $env:GIT_CONFIG_NOSYSTEM='1'
-        foreach($name in $RepoRoutingEnvironment.Keys){
-            Set-Item -LiteralPath ("Env:{0}" -f $name) -Value ([string]$RepoRoutingEnvironment[$name])
+        foreach($name in $AmbientGitEnvironment.Keys){
+            Set-Item -LiteralPath ("Env:{0}" -f $name) -Value ([string]$AmbientGitEnvironment[$name])
         }
         $saved=$ErrorActionPreference
         $environmentRestored=$null
@@ -216,9 +216,9 @@ function Invoke-Verifier {
                     $out=@([string]$_)
                 }
                 $environmentRestored=$true
-                foreach($name in $RepoRoutingEnvironment.Keys){
+                foreach($name in $AmbientGitEnvironment.Keys){
                     $entry=Get-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
-                    if($null -eq $entry -or [string]$entry.Value -cne [string]$RepoRoutingEnvironment[$name]){
+                    if($null -eq $entry -or [string]$entry.Value -cne [string]$AmbientGitEnvironment[$name]){
                         $environmentRestored=$false
                         break
                     }
@@ -236,9 +236,9 @@ function Invoke-Verifier {
         foreach($name in $oldGitConfigEnvironment.Keys){
             Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $oldGitConfigEnvironment[$name]
         }
-        foreach($name in $RepoRoutingEnvironment.Keys){
+        foreach($name in $AmbientGitEnvironment.Keys){
             Remove-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
-            $old=$oldRepoRoutingEnvironment[$name]
+            $old=$oldAmbientGitEnvironment[$name]
             if($old.Present){
                 Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $old.Value
             }
@@ -328,7 +328,7 @@ try {
         [pscustomobject]@{Name='poisoned full repository-routing set';Environment=$fullRoutingEnvironment}
     )
     foreach($case in $routingCases){
-        $result=Invoke-Verifier -Fixture $routingFixture -RepoRoutingEnvironment $case.Environment
+        $result=Invoke-Verifier -Fixture $routingFixture -AmbientGitEnvironment $case.Environment
         if($result.ExitCode -eq 0 -and (($result.Output -join ' | ') -match 'HA-1.5 LOCAL VERIFICATION: PASS')){
             Pass ('production verifier isolates {0}' -f $case.Name)
         } else {
@@ -336,18 +336,65 @@ try {
         }
     }
 
-    $inProcessResult=Invoke-Verifier -Fixture $routingFixture -RepoRoutingEnvironment $fullRoutingEnvironment -InProcess
+    $inProcessResult=Invoke-Verifier -Fixture $routingFixture -AmbientGitEnvironment $fullRoutingEnvironment -InProcess
     if($inProcessResult.ExitCode -eq 0 -and $inProcessResult.EnvironmentRestored){
         Pass 'production verifier restores caller repository-routing environment byte-for-byte'
     } else {
         Fail 'production verifier restores caller repository-routing environment byte-for-byte' ('rc={0} restored={1} output={2}' -f $inProcessResult.ExitCode,$inProcessResult.EnvironmentRestored,($inProcessResult.Output -join ' | '))
     }
 
-    $failedInProcessResult=Invoke-Verifier -Fixture $routingFixture -RepoRoutingEnvironment $fullRoutingEnvironment -InProcess -Commit 'hello-approval-definitely-missing-commit'
+    $failedInProcessResult=Invoke-Verifier -Fixture $routingFixture -AmbientGitEnvironment $fullRoutingEnvironment -InProcess -Commit 'hello-approval-definitely-missing-commit'
     if($failedInProcessResult.ExitCode -ne 0 -and $failedInProcessResult.EnvironmentRestored){
         Pass 'production verifier restores caller repository-routing environment after verification failure'
     } else {
         Fail 'production verifier restores caller repository-routing environment after verification failure' ('rc={0} restored={1} output={2}' -f $failedInProcessResult.ExitCode,$failedInProcessResult.EnvironmentRestored,($failedInProcessResult.Output -join ' | '))
+    }
+
+    $configInjectionRoot=Join-Path $root 'command-scope-config-injection'
+    $configInjectionFixture=New-Fixture -Root $configInjectionRoot
+    git -C $configInjectionFixture.Repo config --unset gpg.format
+    if($LASTEXITCODE -ne 0){throw 'failed to remove fixture gpg.format'}
+    git -C $configInjectionFixture.Repo config --unset gpg.ssh.allowedSignersFile
+    if($LASTEXITCODE -ne 0){throw 'failed to remove fixture allowedSignersFile'}
+    $injectedAllowedSigners=(Join-Path (Join-Path $configInjectionFixture.LocalAppData 'hello-approval\git') 'allowed_signers') -replace '\\','/'
+    $countInjection=@{
+        GIT_CONFIG_COUNT='2'
+        GIT_CONFIG_KEY_0='gpg.format'
+        GIT_CONFIG_VALUE_0='ssh'
+        GIT_CONFIG_KEY_1='gpg.ssh.allowedSignersFile'
+        GIT_CONFIG_VALUE_1=$injectedAllowedSigners
+    }
+    $parametersInjection=@{
+        GIT_CONFIG_PARAMETERS=("'gpg.format'='ssh' 'gpg.ssh.allowedSignersFile'='{0}'" -f $injectedAllowedSigners)
+    }
+    foreach($case in @(
+        [pscustomobject]@{Name='GIT_CONFIG_COUNT/KEY/VALUE';Environment=$countInjection},
+        [pscustomobject]@{Name='GIT_CONFIG_PARAMETERS';Environment=$parametersInjection}
+    )){
+        $result=Invoke-Verifier -Fixture $configInjectionFixture -AmbientGitEnvironment $case.Environment
+        if($result.ExitCode -ne 0 -and (($result.Output -join ' | ') -match 'Effective gpg.format is not ssh')){
+            Pass ('production verifier ignores ambient {0} command-scope config injection' -f $case.Name)
+        } else {
+            Fail ('production verifier ignores ambient {0} command-scope config injection' -f $case.Name) ('rc={0} output={1}' -f $result.ExitCode,($result.Output -join ' | '))
+        }
+    }
+
+    $configRestoreResult=Invoke-Verifier -Fixture $configInjectionFixture -AmbientGitEnvironment $countInjection -InProcess
+    if($configRestoreResult.ExitCode -ne 0 -and $configRestoreResult.EnvironmentRestored){
+        Pass 'production verifier restores caller command-scope config environment after rejection'
+    } else {
+        Fail 'production verifier restores caller command-scope config environment after rejection' ('rc={0} restored={1} output={2}' -f $configRestoreResult.ExitCode,$configRestoreResult.EnvironmentRestored,($configRestoreResult.Output -join ' | '))
+    }
+
+    git config --file $configInjectionFixture.GlobalConfig gpg.format ssh
+    if($LASTEXITCODE -ne 0){throw 'failed to write fixture global gpg.format'}
+    git config --file $configInjectionFixture.GlobalConfig gpg.ssh.allowedSignersFile $injectedAllowedSigners
+    if($LASTEXITCODE -ne 0){throw 'failed to write fixture global allowedSignersFile'}
+    $globalSourceResult=Invoke-Verifier -Fixture $configInjectionFixture
+    if($globalSourceResult.ExitCode -eq 0 -and (($globalSourceResult.Output -join ' | ') -match 'HA-1.5 LOCAL VERIFICATION: PASS')){
+        Pass 'production verifier preserves GIT_CONFIG_GLOBAL as a legitimate config source selector'
+    } else {
+        Fail 'production verifier preserves GIT_CONFIG_GLOBAL as a legitimate config source selector' ('rc={0} output={1}' -f $globalSourceResult.ExitCode,($globalSourceResult.Output -join ' | '))
     }
 
     Write-Host ''

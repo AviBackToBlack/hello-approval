@@ -32,19 +32,31 @@ function Invoke-GitCommand {
         [switch]$AllowExitOne,
         [switch]$IncludeStderr
     )
-    # git -C changes the working directory but does not override ambient repository-routing variables.
-    # Scrub them only while the child process runs, then restore the caller environment exactly.
-    $oldRepositoryRoutingEnvironment = @{}
-    foreach ($name in $GitRepositoryRoutingEnvironmentNames) {
+    # git -C does not override ambient repository routing, and Git command-scope config can inject
+    # effective config like -c. Scrub both only for the child process, then restore the caller environment.
+    $gitInvocationEnvironmentNames = @($GitRepositoryRoutingEnvironmentNames)
+    $gitInvocationEnvironmentNames += @(
+        Get-ChildItem Env: |
+            Where-Object {
+                $_.Name -eq 'GIT_CONFIG_PARAMETERS' -or
+                $_.Name -eq 'GIT_CONFIG_COUNT' -or
+                $_.Name -match '\AGIT_CONFIG_(?:KEY|VALUE)_\d+\z'
+            } |
+            ForEach-Object { $_.Name }
+    )
+    $gitInvocationEnvironmentNames = @($gitInvocationEnvironmentNames | Sort-Object -Unique)
+
+    $oldGitInvocationEnvironment = @{}
+    foreach ($name in $gitInvocationEnvironmentNames) {
         $entry = Get-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
         if ($null -ne $entry) {
-            $oldRepositoryRoutingEnvironment[$name] = [string]$entry.Value
+            $oldGitInvocationEnvironment[$name] = [string]$entry.Value
         }
     }
 
     $saved = $ErrorActionPreference
     try {
-        foreach ($name in $GitRepositoryRoutingEnvironmentNames) {
+        foreach ($name in $gitInvocationEnvironmentNames) {
             Remove-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
         }
         $ErrorActionPreference = 'Continue'
@@ -56,10 +68,10 @@ function Invoke-GitCommand {
         $rc = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $saved
-        foreach ($name in $GitRepositoryRoutingEnvironmentNames) {
+        foreach ($name in $gitInvocationEnvironmentNames) {
             Remove-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
-            if ($oldRepositoryRoutingEnvironment.ContainsKey($name)) {
-                Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $oldRepositoryRoutingEnvironment[$name]
+            if ($oldGitInvocationEnvironment.ContainsKey($name)) {
+                Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $oldGitInvocationEnvironment[$name]
             }
         }
     }
