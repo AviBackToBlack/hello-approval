@@ -39,7 +39,7 @@ foreach ($name in $repoRoutingEnvironmentNames) {
 }
 
 $oldHarnessGitConfigEnvironment = @{}
-foreach ($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })) {
+foreach ($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -eq 'GIT_CONFIG' -or $_.Name -like 'GIT_CONFIG_*' })) {
     $oldHarnessGitConfigEnvironment[$entry.Name] = $entry.Value
     Remove-Item -LiteralPath ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
 }
@@ -179,7 +179,7 @@ function Invoke-Verifier {
     $oldHome=$env:HOME
     $oldXdg=$env:XDG_CONFIG_HOME
     $oldGitConfigEnvironment=@{}
-    foreach($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })){
+    foreach($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -eq 'GIT_CONFIG' -or $_.Name -like 'GIT_CONFIG_*' })){
         $oldGitConfigEnvironment[$entry.Name]=$entry.Value
     }
     $oldAmbientGitEnvironment=@{}
@@ -191,7 +191,7 @@ function Invoke-Verifier {
         }
     }
     try {
-        foreach($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })){
+        foreach($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -eq 'GIT_CONFIG' -or $_.Name -like 'GIT_CONFIG_*' })){
             Remove-Item -LiteralPath ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
         }
         Remove-Item Env:XDG_CONFIG_HOME -ErrorAction SilentlyContinue
@@ -230,7 +230,7 @@ function Invoke-Verifier {
         } finally {$ErrorActionPreference=$saved}
         return [pscustomobject]@{ExitCode=$rc;Output=@($out);EnvironmentRestored=$environmentRestored}
     } finally {
-        foreach($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })){
+        foreach($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -eq 'GIT_CONFIG' -or $_.Name -like 'GIT_CONFIG_*' })){
             Remove-Item -LiteralPath ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
         }
         foreach($name in $oldGitConfigEnvironment.Keys){
@@ -349,6 +349,12 @@ try {
     } else {
         Fail 'production verifier restores caller repository-routing environment after verification failure' ('rc={0} restored={1} output={2}' -f $failedInProcessResult.ExitCode,$failedInProcessResult.EnvironmentRestored,($failedInProcessResult.Output -join ' | '))
     }
+    $failedSubprocessResult=Invoke-Verifier -Fixture $routingFixture -Commit 'hello-approval-definitely-missing-commit'
+    if($failedSubprocessResult.ExitCode -ne 0 -and (($failedSubprocessResult.Output -join ' | ') -match 'hello-approval-definitely-missing-commit')){
+        Pass 'subprocess verifier honors explicit -Commit value'
+    } else {
+        Fail 'subprocess verifier honors explicit -Commit value' ('rc={0} output={1}' -f $failedSubprocessResult.ExitCode,($failedSubprocessResult.Output -join ' | '))
+    }
 
     $configInjectionRoot=Join-Path $root 'command-scope-config-injection'
     $configInjectionFixture=New-Fixture -Root $configInjectionRoot
@@ -367,29 +373,43 @@ try {
     $parametersInjection=@{
         GIT_CONFIG_PARAMETERS=("'gpg.format'='ssh' 'gpg.ssh.allowedSignersFile'='{0}'" -f $injectedAllowedSigners)
     }
+    git config --file $configInjectionFixture.GlobalConfig gpg.ssh.allowedSignersFile $injectedAllowedSigners
+    if($LASTEXITCODE -ne 0){throw 'failed to write fixture global allowedSignersFile'}
+    $fileInjectionConfig=Join-Path $configInjectionRoot 'ambient-override.gitconfig'
+    [IO.File]::WriteAllText(
+        $fileInjectionConfig,
+        "[gpg]`n    format = ssh`n[gpg `"ssh`"]`n    allowedSignersFile = $injectedAllowedSigners`n",
+        [Text.UTF8Encoding]::new($false)
+    )
+    $fileInjection=@{GIT_CONFIG=$fileInjectionConfig}
     foreach($case in @(
         [pscustomobject]@{Name='GIT_CONFIG_COUNT/KEY/VALUE';Environment=$countInjection},
-        [pscustomobject]@{Name='GIT_CONFIG_PARAMETERS';Environment=$parametersInjection}
+        [pscustomobject]@{Name='GIT_CONFIG_PARAMETERS';Environment=$parametersInjection},
+        [pscustomobject]@{Name='GIT_CONFIG file override';Environment=$fileInjection}
     )){
         $result=Invoke-Verifier -Fixture $configInjectionFixture -AmbientGitEnvironment $case.Environment
         if($result.ExitCode -ne 0 -and (($result.Output -join ' | ') -match 'Effective gpg.format is not ssh')){
-            Pass ('production verifier ignores ambient {0} command-scope config injection' -f $case.Name)
+            Pass ('production verifier ignores ambient {0} Git config override/injection' -f $case.Name)
         } else {
-            Fail ('production verifier ignores ambient {0} command-scope config injection' -f $case.Name) ('rc={0} output={1}' -f $result.ExitCode,($result.Output -join ' | '))
+            Fail ('production verifier ignores ambient {0} Git config override/injection' -f $case.Name) ('rc={0} output={1}' -f $result.ExitCode,($result.Output -join ' | '))
         }
     }
 
     $configRestoreResult=Invoke-Verifier -Fixture $configInjectionFixture -AmbientGitEnvironment $countInjection -InProcess
     if($configRestoreResult.ExitCode -ne 0 -and $configRestoreResult.EnvironmentRestored){
-        Pass 'production verifier restores caller command-scope config environment after rejection'
+        Pass 'production verifier restores caller Git config injection environment after rejection'
     } else {
-        Fail 'production verifier restores caller command-scope config environment after rejection' ('rc={0} restored={1} output={2}' -f $configRestoreResult.ExitCode,$configRestoreResult.EnvironmentRestored,($configRestoreResult.Output -join ' | '))
+        Fail 'production verifier restores caller Git config injection environment after rejection' ('rc={0} restored={1} output={2}' -f $configRestoreResult.ExitCode,$configRestoreResult.EnvironmentRestored,($configRestoreResult.Output -join ' | '))
+    }
+    $fileConfigRestoreResult=Invoke-Verifier -Fixture $configInjectionFixture -AmbientGitEnvironment $fileInjection -InProcess
+    if($fileConfigRestoreResult.ExitCode -ne 0 -and $fileConfigRestoreResult.EnvironmentRestored){
+        Pass 'production verifier restores caller GIT_CONFIG environment after rejection'
+    } else {
+        Fail 'production verifier restores caller GIT_CONFIG environment after rejection' ('rc={0} restored={1} output={2}' -f $fileConfigRestoreResult.ExitCode,$fileConfigRestoreResult.EnvironmentRestored,($fileConfigRestoreResult.Output -join ' | '))
     }
 
     git config --file $configInjectionFixture.GlobalConfig gpg.format ssh
     if($LASTEXITCODE -ne 0){throw 'failed to write fixture global gpg.format'}
-    git config --file $configInjectionFixture.GlobalConfig gpg.ssh.allowedSignersFile $injectedAllowedSigners
-    if($LASTEXITCODE -ne 0){throw 'failed to write fixture global allowedSignersFile'}
     $globalSourceResult=Invoke-Verifier -Fixture $configInjectionFixture
     if($globalSourceResult.ExitCode -eq 0 -and (($globalSourceResult.Output -join ' | ') -match 'HA-1.5 LOCAL VERIFICATION: PASS')){
         Pass 'production verifier preserves GIT_CONFIG_GLOBAL as a legitimate config source selector'
@@ -410,7 +430,7 @@ try {
         Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $oldRepoRoutingEnvironment[$name]
     }
 
-    foreach ($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_CONFIG_*' })) {
+    foreach ($entry in @(Get-ChildItem Env: | Where-Object { $_.Name -eq 'GIT_CONFIG' -or $_.Name -like 'GIT_CONFIG_*' })) {
         Remove-Item -LiteralPath ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
     }
     foreach ($name in $oldHarnessGitConfigEnvironment.Keys) {

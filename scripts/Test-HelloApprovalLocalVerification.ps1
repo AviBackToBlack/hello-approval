@@ -38,6 +38,7 @@ function Invoke-GitCommand {
     $gitInvocationEnvironmentNames += @(
         Get-ChildItem Env: |
             Where-Object {
+                $_.Name -eq 'GIT_CONFIG' -or
                 $_.Name -eq 'GIT_CONFIG_PARAMETERS' -or
                 $_.Name -eq 'GIT_CONFIG_COUNT' -or
                 $_.Name -match '\AGIT_CONFIG_(?:KEY|VALUE)_\d+\z'
