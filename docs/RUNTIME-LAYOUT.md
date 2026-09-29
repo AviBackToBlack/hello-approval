@@ -239,4 +239,6 @@ The read-only preflight now delegates provenance-pin consistency and exact insta
 
 If the pinned runtime is absent, preflight preserves the existing non-blocking INFO result. If a present runtime fails shared validation, or the shared provenance-pin policy assertion rejects the parsed pin, preflight converts that assertion failure into a structured BLOCK finding in the hello-approval/preflight/v1 result and exits 2 rather than treating the condition as an unclassified script failure.
 
+Preflight also owns provenance-input classification outside the shared validator. Unreadable or malformed provenance JSON emits `pin.parse`; a missing, non-string, blank, or unusable Windows path-component `upstream.release_tag` emits `pin.upstream.release-tag` before any runtime path is constructed; and missing, empty, or incompatible `installation_policy.allowed_distribution` emits `pin.policy.distribution`. These are structured `hello-approval/preflight/v1` BLOCK results with exit code `2`, not generic script failures.
+
 Distribution compatibility, environment/socket diagnostics, sshenc configuration discovery, stock ssh-agent observation, SSH config inspection, and Git diagnostics remain preflight-owned concerns outside the shared validator.
