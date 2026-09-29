@@ -13,6 +13,17 @@ $ErrorActionPreference = 'Stop'
 $ExpectedSchema = 'hello-approval/ha-1.5/v1'
 $ExpectedTrustMarker = "# $ExpectedSchema"
 
+$GitRepositoryRoutingEnvironmentNames = @(
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_COMMON_DIR',
+    'GIT_CEILING_DIRECTORIES',
+    'GIT_NAMESPACE'
+)
+
 function Invoke-GitCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Git,
@@ -21,8 +32,34 @@ function Invoke-GitCommand {
         [switch]$AllowExitOne,
         [switch]$IncludeStderr
     )
+    # git -C does not override ambient repository routing, and Git command-scope config can inject
+    # effective config like -c. Scrub both only for the child process, then restore the caller environment.
+    $gitInvocationEnvironmentNames = @($GitRepositoryRoutingEnvironmentNames)
+    $gitInvocationEnvironmentNames += @(
+        Get-ChildItem Env: |
+            Where-Object {
+                $_.Name -eq 'GIT_CONFIG' -or
+                $_.Name -eq 'GIT_CONFIG_PARAMETERS' -or
+                $_.Name -eq 'GIT_CONFIG_COUNT' -or
+                $_.Name -match '\AGIT_CONFIG_(?:KEY|VALUE)_\d+\z'
+            } |
+            ForEach-Object { $_.Name }
+    )
+    $gitInvocationEnvironmentNames = @($gitInvocationEnvironmentNames | Sort-Object -Unique)
+
+    $oldGitInvocationEnvironment = @{}
+    foreach ($name in $gitInvocationEnvironmentNames) {
+        $entry = Get-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
+        if ($null -ne $entry) {
+            $oldGitInvocationEnvironment[$name] = [string]$entry.Value
+        }
+    }
+
     $saved = $ErrorActionPreference
     try {
+        foreach ($name in $gitInvocationEnvironmentNames) {
+            Remove-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
+        }
         $ErrorActionPreference = 'Continue'
         if ($IncludeStderr) {
             $output = @(& $Git @Arguments 2>&1 | ForEach-Object { [string]$_ })
@@ -32,6 +69,12 @@ function Invoke-GitCommand {
         $rc = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $saved
+        foreach ($name in $gitInvocationEnvironmentNames) {
+            Remove-Item -LiteralPath ("Env:{0}" -f $name) -ErrorAction SilentlyContinue
+            if ($oldGitInvocationEnvironment.ContainsKey($name)) {
+                Set-Item -LiteralPath ("Env:{0}" -f $name) -Value $oldGitInvocationEnvironment[$name]
+            }
+        }
     }
     if ($rc -eq 0 -or ($AllowExitOne -and $rc -eq 1)) {
         return [pscustomobject]@{ ExitCode = $rc; Output = $output }
