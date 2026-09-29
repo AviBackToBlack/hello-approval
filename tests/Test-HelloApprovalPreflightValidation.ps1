@@ -59,6 +59,12 @@ function New-Fixture {
         [switch]$MissingReleaseTag,
         [switch]$BlankReleaseTag,
         [switch]$TraversalReleaseTag,
+        [switch]$IllegalCharReleaseTag,
+        [switch]$WildcardReleaseTag,
+        [switch]$DriveQualifiedReleaseTag,
+        [switch]$NonStringReleaseTag,
+        [switch]$TrailingDotReleaseTag,
+        [switch]$ReservedDeviceReleaseTag,
         [switch]$MissingDistribution
     )
 
@@ -143,6 +149,12 @@ function New-Fixture {
     if($MissingReleaseTag){[void]$pin.upstream.Remove('release_tag')}
     if($BlankReleaseTag){$pin.upstream.release_tag='   '}
     if($TraversalReleaseTag){$pin.upstream.release_tag='..\escape'}
+    if($IllegalCharReleaseTag){$pin.upstream.release_tag='a|b'}
+    if($WildcardReleaseTag){$pin.upstream.release_tag='v*test'}
+    if($DriveQualifiedReleaseTag){$pin.upstream.release_tag='C:'}
+    if($NonStringReleaseTag){$pin.upstream.release_tag=$true}
+    if($TrailingDotReleaseTag){$pin.upstream.release_tag='v-test.'}
+    if($ReservedDeviceReleaseTag){$pin.upstream.release_tag='CON'}
     if($MissingDistribution){[void]$pin.installation_policy.Remove('allowed_distribution')}
     if(-not $PinMissing){
         $pinText=if($MalformedPinJson){'{ this is not valid json'}else{$pin|ConvertTo-Json -Depth 20}
@@ -241,6 +253,12 @@ try {
         [pscustomobject]@{Name='missing upstream release tag';Args=@{MissingReleaseTag=$true};Kind='release-tag-block'},
         [pscustomobject]@{Name='blank upstream release tag';Args=@{BlankReleaseTag=$true};Kind='release-tag-block'},
         [pscustomobject]@{Name='traversal upstream release tag';Args=@{TraversalReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='illegal-character upstream release tag';Args=@{IllegalCharReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='wildcard upstream release tag';Args=@{WildcardReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='drive-qualified upstream release tag';Args=@{DriveQualifiedReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='non-string upstream release tag';Args=@{NonStringReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='trailing-dot upstream release tag';Args=@{TrailingDotReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device upstream release tag';Args=@{ReservedDeviceReleaseTag=$true};Kind='release-tag-block'},
         [pscustomobject]@{Name='missing allowed distribution';Args=@{MissingDistribution=$true};Kind='distribution-block'},
         [pscustomobject]@{Name='Bin case-only directory mismatch';Args=@{BinCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='runtime file case-only mismatch';Args=@{FileCaseMismatch=$true};Kind='runtime-delta'},

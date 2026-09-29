@@ -34,6 +34,23 @@ function Get-EnvironmentValue {
     return [Environment]::GetEnvironmentVariable($Name, [EnvironmentVariableTarget]::$Target)
 }
 
+function Test-PreflightReleaseTag {
+    param(
+        [AllowNull()][object]$Value
+    )
+
+    if ($null -eq $Value -or -not ($Value -is [string])) { return $false }
+    $name = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+    if ($name -ceq '.' -or $name -ceq '..') { return $false }
+    if ($name.Length -gt 255) { return $false }
+    if ($name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) { return $false }
+    if ([IO.Path]::IsPathRooted($name)) { return $false }
+    if ($name.EndsWith('.') -or $name.EndsWith(' ')) { return $false }
+    if ($name -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$') { return $false }
+    return $true
+}
+
 function Get-GitScopedValue {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('global', 'system')][string]$Scope,
@@ -125,10 +142,10 @@ try {
 
     $upstreamProperty = $pin.PSObject.Properties['upstream']
     $releaseTagProperty = if ($null -eq $upstreamProperty -or $null -eq $upstreamProperty.Value) { $null } else { $upstreamProperty.Value.PSObject.Properties['release_tag'] }
-    $releaseTag = if ($null -eq $releaseTagProperty) { $null } else { [string]$releaseTagProperty.Value }
-    $releaseTagIsLeaf = -not [string]::IsNullOrWhiteSpace($releaseTag) -and $releaseTag -cne '.' -and $releaseTag -cne '..' -and $releaseTag.IndexOf([IO.Path]::DirectorySeparatorChar) -lt 0 -and $releaseTag.IndexOf([IO.Path]::AltDirectorySeparatorChar) -lt 0
-    if (-not $releaseTagIsLeaf) {
-        Add-Finding -Severity 'BLOCK' -Check 'pin.upstream.release-tag' -Message 'Pin upstream.release_tag is missing or is not a usable single runtime path segment.' -Value $releaseTag
+    $releaseTagValue = if ($null -eq $releaseTagProperty) { $null } else { $releaseTagProperty.Value }
+    $releaseTag = if ($releaseTagValue -is [string]) { [string]$releaseTagValue } else { $null }
+    if (-not (Test-PreflightReleaseTag -Value $releaseTagValue)) {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.upstream.release-tag' -Message 'Pin upstream.release_tag is missing, non-string, or not a usable Windows runtime path segment.' -Value $releaseTagValue
         throw 'Pinned upstream release tag is unusable.'
     }
     Add-Finding -Severity 'PASS' -Check 'pin.upstream.release-tag' -Message 'Pin upstream release tag is usable as a runtime path segment.' -Value $releaseTag
