@@ -96,7 +96,12 @@ try {
         throw 'Pinned provenance JSON is missing.'
     }
 
-    $pin = Get-Content -LiteralPath $pinPath -Raw | ConvertFrom-Json
+    try {
+        $pin = Get-Content -LiteralPath $pinPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.parse' -Message 'Pinned provenance JSON could not be read and parsed.' -Value $_.Exception.Message
+        throw 'Pinned provenance JSON parsing failed.'
+    }
     try {
         [void](Assert-HelloApprovalPinPolicy -Pin $pin)
         Add-Finding -Severity 'PASS' -Check 'pin.schema' -Message 'Provenance pin schema is supported.' -Value $pin.schema
@@ -107,13 +112,27 @@ try {
         throw 'Provenance pin policy validation failed.'
     }
 
-    if ($pin.installation_policy.allowed_distribution -ne 'zip-manual-placement') {
-        Add-Finding -Severity 'BLOCK' -Check 'pin.policy.distribution' -Message 'Pin distribution policy is incompatible with the HA-1.1 installer.' -Value $pin.installation_policy.allowed_distribution
+    $installationPolicyProperty = $pin.PSObject.Properties['installation_policy']
+    $distributionProperty = if ($null -eq $installationPolicyProperty -or $null -eq $installationPolicyProperty.Value) { $null } else { $installationPolicyProperty.Value.PSObject.Properties['allowed_distribution'] }
+    $allowedDistribution = if ($null -eq $distributionProperty) { $null } else { [string]$distributionProperty.Value }
+    if ([string]::IsNullOrWhiteSpace($allowedDistribution)) {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.policy.distribution' -Message 'Pin distribution policy is missing or empty.' -Value $allowedDistribution
+    } elseif ($allowedDistribution -cne 'zip-manual-placement') {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.policy.distribution' -Message 'Pin distribution policy is incompatible with the HA-1.1 installer.' -Value $allowedDistribution
     } else {
-        Add-Finding -Severity 'PASS' -Check 'pin.policy.distribution' -Message 'Pin distribution policy matches the inert ZIP installer.' -Value $pin.installation_policy.allowed_distribution
+        Add-Finding -Severity 'PASS' -Check 'pin.policy.distribution' -Message 'Pin distribution policy matches the inert ZIP installer.' -Value $allowedDistribution
     }
 
-    $releaseTag = [string]$pin.upstream.release_tag
+    $upstreamProperty = $pin.PSObject.Properties['upstream']
+    $releaseTagProperty = if ($null -eq $upstreamProperty -or $null -eq $upstreamProperty.Value) { $null } else { $upstreamProperty.Value.PSObject.Properties['release_tag'] }
+    $releaseTag = if ($null -eq $releaseTagProperty) { $null } else { [string]$releaseTagProperty.Value }
+    $releaseTagIsLeaf = -not [string]::IsNullOrWhiteSpace($releaseTag) -and $releaseTag -cne '.' -and $releaseTag -cne '..' -and $releaseTag.IndexOf([IO.Path]::DirectorySeparatorChar) -lt 0 -and $releaseTag.IndexOf([IO.Path]::AltDirectorySeparatorChar) -lt 0
+    if (-not $releaseTagIsLeaf) {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.upstream.release-tag' -Message 'Pin upstream.release_tag is missing or is not a usable single runtime path segment.' -Value $releaseTag
+        throw 'Pinned upstream release tag is unusable.'
+    }
+    Add-Finding -Severity 'PASS' -Check 'pin.upstream.release-tag' -Message 'Pin upstream release tag is usable as a runtime path segment.' -Value $releaseTag
+
     $runtimeRoot = Join-Path $env:LOCALAPPDATA ("hello-approval\runtime\sshenc\{0}" -f $releaseTag)
     $runtimeBin = Join-Path $runtimeRoot 'bin'
     $expectedPipe = '\\.\pipe\sshenc-github-signing'

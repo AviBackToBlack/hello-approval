@@ -53,7 +53,13 @@ function New-Fixture {
         [switch]$MalformedUnusedName,
         [switch]$RuntimeMissing,
         [switch]$ValidationModuleMissing,
-        [switch]$PinMissing
+        [switch]$PinMissing,
+        [switch]$MalformedPinJson,
+        [switch]$MissingUpstream,
+        [switch]$MissingReleaseTag,
+        [switch]$BlankReleaseTag,
+        [switch]$TraversalReleaseTag,
+        [switch]$MissingDistribution
     )
 
     $tool=Join-Path $Root 'tool'
@@ -133,8 +139,14 @@ function New-Fixture {
             installed_files=@('sshenc.exe','sshenc-agent.exe')
         }
     }
+    if($MissingUpstream){[void]$pin.Remove('upstream')}
+    if($MissingReleaseTag){[void]$pin.upstream.Remove('release_tag')}
+    if($BlankReleaseTag){$pin.upstream.release_tag='   '}
+    if($TraversalReleaseTag){$pin.upstream.release_tag='..\escape'}
+    if($MissingDistribution){[void]$pin.installation_policy.Remove('allowed_distribution')}
     if(-not $PinMissing){
-        [IO.File]::WriteAllText((Join-Path $prov 'sshenc-v0.6.101.json'),($pin|ConvertTo-Json -Depth 20),[Text.UTF8Encoding]::new($false))
+        $pinText=if($MalformedPinJson){'{ this is not valid json'}else{$pin|ConvertTo-Json -Depth 20}
+        [IO.File]::WriteAllText((Join-Path $prov 'sshenc-v0.6.101.json'),$pinText,[Text.UTF8Encoding]::new($false))
     }
     if($RuntimeMissing){
         Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
@@ -224,6 +236,12 @@ try {
         [pscustomobject]@{Name='missing runtime';Args=@{RuntimeMissing=$true};Kind='missing'},
         [pscustomobject]@{Name='missing validation module';Args=@{ValidationModuleMissing=$true};Kind='module-migration'},
         [pscustomobject]@{Name='missing provenance pin';Args=@{PinMissing=$true};Kind='required-structured-block'},
+        [pscustomobject]@{Name='malformed provenance JSON';Args=@{MalformedPinJson=$true};Kind='pin-parse-block'},
+        [pscustomobject]@{Name='missing upstream object';Args=@{MissingUpstream=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='missing upstream release tag';Args=@{MissingReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='blank upstream release tag';Args=@{BlankReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='traversal upstream release tag';Args=@{TraversalReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='missing allowed distribution';Args=@{MissingDistribution=$true};Kind='distribution-block'},
         [pscustomobject]@{Name='Bin case-only directory mismatch';Args=@{BinCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='runtime file case-only mismatch';Args=@{FileCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='hello-approval project-root junction';Args=@{ProjectRootThroughJunction=$true};Kind='runtime-delta'},
@@ -279,6 +297,21 @@ try {
                 Pass ("{0} returns structured BLOCK result" -f $case.Name)
             } else {
                 Fail ("{0} returns structured BLOCK result" -f $case.Name) ("rc={0} blocked={1} findings={2}" -f $result.ExitCode,$result.Json.blocked,(($result.Json.findings | ConvertTo-Json -Depth 8) -join ''))
+            }
+            continue
+        }
+
+        if($case.Kind -in @('pin-parse-block','release-tag-block','distribution-block')){
+            $expectedCheck=switch($case.Kind){
+                'pin-parse-block' {'pin.parse'}
+                'release-tag-block' {'pin.upstream.release-tag'}
+                'distribution-block' {'pin.policy.distribution'}
+            }
+            $findingCount=@($result.Json.findings | Where-Object { $_.severity -eq 'BLOCK' -and $_.check -eq $expectedCheck }).Count
+            if((Is-StructuredBlockedResult $result) -and $findingCount -eq 1){
+                Pass ('{0} returns named structured BLOCK ({1})' -f $case.Name,$expectedCheck)
+            } else {
+                Fail ('{0} returns named structured BLOCK ({1})' -f $case.Name,$expectedCheck) ('rc={0} blocked={1} findings={2}' -f $result.ExitCode,$result.Json.blocked,(($result.Json.findings | ConvertTo-Json -Depth 8) -join ''))
             }
             continue
         }
