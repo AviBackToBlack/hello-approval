@@ -14,6 +14,26 @@ $PublicKeyLeaf = 'github-signing.pub'
 $ExpectedKeyType = 'sk-ecdsa-sha2-nistp256@openssh.com'
 $OwnedKeys = @('gpg.format', 'gpg.ssh.program', 'user.signingkey')
 
+function Test-GitConfigInstallReleaseTag {
+    param(
+        [AllowNull()][object]$Value
+    )
+
+    if ($null -eq $Value -or -not ($Value -is [string])) { return $false }
+    $name = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+    if ($name -ceq '.' -or $name -ceq '..') { return $false }
+    if ($name.Length -gt 255) { return $false }
+    if ($name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) { return $false }
+    if ([IO.Path]::IsPathRooted($name)) { return $false }
+    if ($name.EndsWith('.') -or $name.EndsWith(' ')) { return $false }
+    # Union of reserved DOS device names across supported Windows releases (newer builds
+    # reserve fewer names in full paths), including superscript COM/LPT digits, console
+    # pseudo-devices, and the legacy "NAME .ext" form whose base trims trailing spaces.
+    if ($name -match '^(?i:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|CLOCK\$|(?:COM|LPT)[0-9\u00B9\u00B2\u00B3]) *(?:\..*)?$') { return $false }
+    return $true
+}
+
 function Ensure-TrustedDirectory {
     param(
         [Parameter(Mandatory = $true)][string]$TrustedBase,
@@ -124,12 +144,19 @@ Import-Module $validationModulePath -Force -ErrorAction Stop
 $pinPath = Join-Path (Join-Path $repoRoot 'provenance') 'sshenc-v0.6.101.json'
 $pin = Get-Content -LiteralPath $pinPath -Raw | ConvertFrom-Json
 [void](Assert-HelloApprovalPinPolicy -Pin $pin)
+$upstreamProperty = $pin.PSObject.Properties['upstream']
+$releaseTagProperty = if ($null -eq $upstreamProperty -or -not ($upstreamProperty.Value -is [pscustomobject])) { $null } else { $upstreamProperty.Value.PSObject.Properties['release_tag'] }
+$releaseTagValue = if ($null -eq $releaseTagProperty) { $null } else { $releaseTagProperty.Value }
+if (-not (Test-GitConfigInstallReleaseTag -Value $releaseTagValue)) {
+    throw 'Refusing installation because pinned upstream.release_tag is missing, non-string, or not a usable Windows runtime path segment.'
+}
+$releaseTag = [string]$releaseTagValue
 if ($pin.installation_policy.allowed_distribution -ne 'zip-manual-placement') {
     throw 'Pinned distribution policy is not zip-manual-placement.'
 }
 
 $runtimeBase = Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA 'hello-approval') 'runtime') 'sshenc'
-$runtimeRoot = Join-Path $runtimeBase ([string]$pin.upstream.release_tag)
+$runtimeRoot = Join-Path $runtimeBase $releaseTag
 $runtimeValidation = Assert-HelloApprovalPinnedRuntime -RuntimeRoot $runtimeRoot -Pin $pin -TrustedBase $env:LOCALAPPDATA
 $sshencPath = [IO.Path]::GetFullPath((Join-Path $runtimeValidation.BinPath 'sshenc.exe'))
 

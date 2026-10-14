@@ -210,6 +210,8 @@ The script:
 
 It deliberately has no "latest" lookup and no package-manager mode.
 
+The runtime version directory name comes from the caller-owned `upstream.release_tag`. Every direct consumer that builds a runtime path from it, not only preflight, requires it to be a JSON string that is a usable single Windows path component. Those consumers are the runtime, Scheduled Task and Git config installers, plus Doctor and Uninstall. The check rejects separators and traversal (`.`, `..`), invalid filename characters and wildcards, rooted or drive-qualified forms, trailing dot or space, reserved device names (including `COM0`-`COM9`/`LPT0`-`LPT9` with superscript digits, `CONIN$`, `CONOUT$` and `CLOCK$`), and components over 255 characters. It runs immediately after the shared pin-policy assertion and before any runtime path is constructed or any mutation runs. The installers refuse with a terminating error. Running preflight first is not required.
+
 ## 9. Config installation policy
 
 HA-1.1 ships an example rather than silently overwriting the upstream-resolved sshenc config path.

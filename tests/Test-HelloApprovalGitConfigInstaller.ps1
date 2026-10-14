@@ -189,6 +189,7 @@ function New-SyntheticFixture {
 
     return [pscustomobject]@{
         Installer = $repo.Installer
+        PinPath = $repo.PinPath
         LocalAppData = $local
         UserProfile = $profile
         GlobalConfig = Join-Path $Root 'global.gitconfig'
@@ -238,6 +239,55 @@ function Invoke-Installer {
     }
 }
 
+function Set-FixtureReleaseTag {
+    param(
+        [Parameter(Mandatory = $true)][string]$PinPath,
+        [Parameter(Mandatory = $true)][string]$Mode,
+        [AllowNull()][string]$Value
+    )
+
+    $pinObject = Get-Content -LiteralPath $PinPath -Raw | ConvertFrom-Json
+    switch ($Mode) {
+        'missing' { [void]$pinObject.upstream.PSObject.Properties.Remove('release_tag') }
+        'boolean' { $pinObject.upstream.release_tag = $true }
+        default { $pinObject.upstream.release_tag = $Value }
+    }
+    $pinText = $pinObject | ConvertTo-Json -Depth 20
+    # Keep the pin ASCII so non-ASCII fixture tags survive the reader's default PS5.1 encoding.
+    $pinText = [regex]::Replace($pinText, '[^\x00-\x7F]', { param($m) '\u{0:X4}' -f [int][char]$m.Value })
+    [IO.File]::WriteAllText($PinPath, $pinText, [Text.UTF8Encoding]::new($false))
+}
+
+function Test-ReleaseTagRefusal($Result) {
+    return (($Result.Output -join ' ') -match 'Refusing installation because pinned upstream\.release_tag is missing, non-string')
+}
+
+$releaseTagCases = @(
+    [pscustomobject]@{ Name = 'missing'; Mode = 'missing'; Value = $null; Reject = $true },
+    [pscustomobject]@{ Name = 'non-string'; Mode = 'boolean'; Value = $null; Reject = $true },
+    [pscustomobject]@{ Name = 'blank'; Mode = 'value'; Value = '   '; Reject = $true },
+    [pscustomobject]@{ Name = 'current-directory'; Mode = 'value'; Value = '.'; Reject = $true },
+    [pscustomobject]@{ Name = 'parent-directory'; Mode = 'value'; Value = '..'; Reject = $true },
+    [pscustomobject]@{ Name = 'traversal'; Mode = 'value'; Value = '..\escape'; Reject = $true },
+    [pscustomobject]@{ Name = 'drive-qualified'; Mode = 'value'; Value = 'C:'; Reject = $true },
+    [pscustomobject]@{ Name = 'wildcard'; Mode = 'value'; Value = 'v*test'; Reject = $true },
+    [pscustomobject]@{ Name = 'trailing-dot'; Mode = 'value'; Value = 'v-test.'; Reject = $true },
+    [pscustomobject]@{ Name = 'reserved-device CONIN$'; Mode = 'value'; Value = 'conin$'; Reject = $true },
+    [pscustomobject]@{ Name = 'reserved-device COM superscript-one'; Mode = 'value'; Value = ('COM' + [char]0x00B9); Reject = $true },
+    [pscustomobject]@{ Name = 'non-reserved COM10'; Mode = 'value'; Value = 'COM10'; Reject = $false }
+)
+
+function Assert-ReleaseTagCase($TagCase, $Result, [bool]$Mutated, [string]$Gate) {
+    if ($TagCase.Reject) {
+        $label = "hardened installer rejects $($TagCase.Name) upstream release tag before $Gate"
+        if ($Result.ExitCode -ne 0 -and (Test-ReleaseTagRefusal $Result) -and -not $Mutated) { Pass $label }
+        else { Fail $label ("rc={0} mutated={1} output={2}" -f $Result.ExitCode, $Mutated, ($Result.Output -join ' | ')) }
+    } else {
+        $label = "hardened installer does not refuse $($TagCase.Name) upstream release tag"
+        if (-not (Test-ReleaseTagRefusal $Result) -and -not $Mutated) { Pass $label }
+        else { Fail $label ("rc={0} mutated={1} output={2}" -f $Result.ExitCode, $Mutated, ($Result.Output -join ' | ')) }
+    }
+}
 $root = Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-git-config-' + [Guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($root)
 
@@ -356,6 +406,17 @@ try {
         }
     }
 
+    if (-not $ExpectedPhase1) {
+        $tagIndex = 0
+        foreach ($tagCase in $releaseTagCases) {
+            $tagIndex++
+            $tagFixture = New-SyntheticFixture -Root (Join-Path $root ('release-tag-{0}' -f $tagIndex))
+            Set-FixtureReleaseTag -PinPath $tagFixture.PinPath -Mode $tagCase.Mode -Value $tagCase.Value
+            $tagResult = Invoke-Installer -Fixture $tagFixture -WhatIf
+            $tagMutated = Test-Path -LiteralPath $tagFixture.GlobalConfig
+            Assert-ReleaseTagCase $tagCase $tagResult $tagMutated 'runtime path construction'
+        }
+    }
     Write-Host ''
     Write-Host ("RESULT passed={0} failed={1} mode={2}" -f $script:Passed,$script:Failed,$(if($ExpectedPhase1){'Phase1'}else{'Hardened'}))
     if ($script:Failed -ne 0) { exit 1 }

@@ -9,6 +9,26 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+function Test-RuntimeInstallReleaseTag {
+    param(
+        [AllowNull()][object]$Value
+    )
+
+    if ($null -eq $Value -or -not ($Value -is [string])) { return $false }
+    $name = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+    if ($name -ceq '.' -or $name -ceq '..') { return $false }
+    if ($name.Length -gt 255) { return $false }
+    if ($name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) { return $false }
+    if ([IO.Path]::IsPathRooted($name)) { return $false }
+    if ($name.EndsWith('.') -or $name.EndsWith(' ')) { return $false }
+    # Union of reserved DOS device names across supported Windows releases (newer builds
+    # reserve fewer names in full paths), including superscript COM/LPT digits, console
+    # pseudo-devices, and the legacy "NAME .ext" form whose base trims trailing spaces.
+    if ($name -match '^(?i:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|CLOCK\$|(?:COM|LPT)[0-9\u00B9\u00B2\u00B3]) *(?:\..*)?$') { return $false }
+    return $true
+}
+
 function Get-StreamSha256 {
     param([Parameter(Mandatory = $true)][System.IO.Stream]$Stream)
 
@@ -54,6 +74,13 @@ if (-not (Test-Path -LiteralPath $pinPath -PathType Leaf)) {
 }
 $pin = Get-Content -LiteralPath $pinPath -Raw | ConvertFrom-Json
 [void](Assert-HelloApprovalPinPolicy -Pin $pin)
+$upstreamProperty = $pin.PSObject.Properties['upstream']
+$releaseTagProperty = if ($null -eq $upstreamProperty -or -not ($upstreamProperty.Value -is [pscustomobject])) { $null } else { $upstreamProperty.Value.PSObject.Properties['release_tag'] }
+$releaseTagValue = if ($null -eq $releaseTagProperty) { $null } else { $releaseTagProperty.Value }
+if (-not (Test-RuntimeInstallReleaseTag -Value $releaseTagValue)) {
+    throw 'Refusing installation because pinned upstream.release_tag is missing, non-string, or not a usable Windows runtime path segment.'
+}
+$releaseTag = [string]$releaseTagValue
 
 if ($pin.installation_policy.target_architecture -ne 'x86_64-pc-windows-msvc') {
     throw "This installer slice only supports x86_64-pc-windows-msvc; pin says $($pin.installation_policy.target_architecture)."
@@ -115,7 +142,6 @@ try {
         }
     }
 
-    $releaseTag = [string]$pin.upstream.release_tag
     $runtimeBase = Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA 'hello-approval') 'runtime') 'sshenc'
     $runtimeRoot = Join-Path $runtimeBase $releaseTag
 
