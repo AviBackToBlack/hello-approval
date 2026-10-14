@@ -78,6 +78,7 @@ function New-Fixture {
         [switch]$IncludeLauncher,
         [switch]$MissingReleaseTag,
         [switch]$NonStringReleaseTag,
+        [switch]$NullReleaseTag,
         [AllowNull()][string]$ReleaseTag
     )
 
@@ -164,6 +165,7 @@ function New-Fixture {
     }
     if($MissingReleaseTag){[void]$pin.upstream.Remove('release_tag')}
     if($NonStringReleaseTag){$pin.upstream.release_tag=$true}
+    if($NullReleaseTag){$pin.upstream.release_tag=$null}
     if($PSBoundParameters.ContainsKey('ReleaseTag')){$pin.upstream.release_tag=$ReleaseTag}
     $pinText=$pin|ConvertTo-Json -Depth 20
     # Keep the pin ASCII so non-ASCII fixture tags survive the reader's default PS5.1 encoding.
@@ -286,6 +288,7 @@ try {
         [pscustomobject]@{Name='missing runtime below runtime-parent junction';Args=@{RuntimeParentThroughJunction=$true;RuntimeMissing=$true};Mode='runtime';Kind='ancestry-delta'},
         [pscustomobject]@{Name='malformed unused pin leaf name';Args=@{MalformedUnusedName=$true};Mode='runtime';Kind='pin-delta'},
         [pscustomobject]@{Name='missing upstream release tag';Args=@{MissingReleaseTag=$true};Mode='runtime';Kind='release-tag-reject'},
+        [pscustomobject]@{Name='JSON null upstream release tag';Args=@{NullReleaseTag=$true};Mode='runtime';Kind='release-tag-reject'},
         [pscustomobject]@{Name='non-string upstream release tag';Args=@{NonStringReleaseTag=$true};Mode='runtime';Kind='release-tag-reject'},
         [pscustomobject]@{Name='blank upstream release tag';Args=@{ReleaseTag='   '};Mode='runtime';Kind='release-tag-reject'},
         [pscustomobject]@{Name='current-directory upstream release tag';Args=@{ReleaseTag='.'};Mode='runtime';Kind='release-tag-reject'},
