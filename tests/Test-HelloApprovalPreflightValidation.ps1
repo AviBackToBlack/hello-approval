@@ -170,8 +170,12 @@ function Invoke-Preflight {
     $oldSocket=$env:SSHENC_AGENT_SOCKET
     $oldAuth=$env:SSH_AUTH_SOCK
     $oldGitSsh=$env:GIT_SSH_COMMAND
-    $oldGitSystem=$env:GIT_CONFIG_SYSTEM
+    $gitSourceNames=@(@('XDG_CONFIG_HOME','GIT_CONFIG_SYSTEM') + @(Get-ChildItem Env: | Where-Object { $_.Name -eq 'GIT_CONFIG' -or $_.Name -like 'GIT_CONFIG_*' } | ForEach-Object { $_.Name }) | Select-Object -Unique)
+    $oldGitSources=@{}
+    foreach($name in $gitSourceNames){ $oldGitSources[$name]=[Environment]::GetEnvironmentVariable($name,'Process') }
     try {
+        # Fixture HOME/USERPROFILE (plus an optional fixture system file) must be the only Git config sources in play.
+        foreach($name in $gitSourceNames){ [Environment]::SetEnvironmentVariable($name,$null,'Process') }
         if($null -ne $Fixture.SystemGitConfig){$env:GIT_CONFIG_SYSTEM=$Fixture.SystemGitConfig}
         $env:LOCALAPPDATA=$Fixture.LocalAppData
         $env:APPDATA=$Fixture.AppData
@@ -198,7 +202,7 @@ function Invoke-Preflight {
         if($null -eq $oldSocket){Remove-Item Env:SSHENC_AGENT_SOCKET -ErrorAction SilentlyContinue}else{$env:SSHENC_AGENT_SOCKET=$oldSocket}
         if($null -eq $oldAuth){Remove-Item Env:SSH_AUTH_SOCK -ErrorAction SilentlyContinue}else{$env:SSH_AUTH_SOCK=$oldAuth}
         if($null -eq $oldGitSsh){Remove-Item Env:GIT_SSH_COMMAND -ErrorAction SilentlyContinue}else{$env:GIT_SSH_COMMAND=$oldGitSsh}
-        if($null -eq $oldGitSystem){Remove-Item Env:GIT_CONFIG_SYSTEM -ErrorAction SilentlyContinue}else{$env:GIT_CONFIG_SYSTEM=$oldGitSystem}
+        foreach($name in $gitSourceNames){ [Environment]::SetEnvironmentVariable($name,$oldGitSources[$name],'Process') }
     }
 }
 
@@ -301,6 +305,10 @@ try {
         }
 
         if($case.Kind -eq 'git-scope-unreadable'){
+            if(@($result.Json.findings | Where-Object { $_.check -eq 'git.present' -and $_.severity -eq 'WARN' }).Count -gt 0){
+                Write-Host ('SKIP  {0} requires Git on PATH' -f $case.Name)
+                continue
+            }
             # A malformed file in any scope makes every git config read fatal, so completeness is
             # asserted across both scopes and the BLOCK must name the actual offending file.
             $gitKeys=@('core.sshCommand','gpg.format','gpg.ssh.program','gpg.ssh.allowedSignersFile','user.signingkey','commit.gpgsign','tag.gpgsign','user.name','user.email')
