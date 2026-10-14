@@ -14,6 +14,8 @@ $taskMarker = 'hello-approval/ha-1.3/v1'
 
 $script:Passed = 0
 $script:Failed = 0
+$script:StubCallCount = 0
+$script:WrongTargets = New-Object System.Collections.Generic.List[string]
 function Pass([string]$Name) { $script:Passed++; Write-Host "PASS  $Name" }
 function Fail([string]$Name,[string]$Message) { $script:Failed++; Write-Host "FAIL  $Name - $Message" }
 
@@ -36,6 +38,9 @@ function Invoke-UninstallerWithStubs {
         HasDescription = [bool]$Task['HasDescription']
         StopCompletes = [bool]$Task['StopCompletes']
         Calls = New-Object System.Collections.Generic.List[string]
+        WrongTargets = New-Object System.Collections.Generic.List[string]
+        ExpectedName = $taskName
+        ExpectedPath = '\'
     }
 
     $caught = $null
@@ -44,10 +49,15 @@ function Invoke-UninstallerWithStubs {
         $output = @(& {
             param($UninstallerPath, $State, $UseWhatIf)
 
+            function Add-StubCall([string]$Verb, [string]$Name, [string]$Path) {
+                $State.Calls.Add($Verb)
+                if ($Name -cne $State.ExpectedName -or $Path -cne $State.ExpectedPath) { $State.WrongTargets.Add("${Verb}:$Path$Name") }
+            }
+
             function Get-ScheduledTask {
                 [CmdletBinding()]
                 param([string]$TaskName, [string]$TaskPath)
-                $State.Calls.Add('Get')
+                Add-StubCall 'Get' $TaskName $TaskPath
                 if (-not $State.Exists) { return $null }
                 return [pscustomobject]@{ TaskName = $TaskName; TaskPath = $TaskPath; State = $State.State }
             }
@@ -55,7 +65,7 @@ function Invoke-UninstallerWithStubs {
             function Export-ScheduledTask {
                 [CmdletBinding()]
                 param([string]$TaskName, [string]$TaskPath)
-                $State.Calls.Add('Export')
+                Add-StubCall 'Export' $TaskName $TaskPath
                 $info = if ($State.HasDescription) {
                     '<RegistrationInfo><Description>' + [Security.SecurityElement]::Escape([string]$State.Description) + '</Description></RegistrationInfo>'
                 } else {
@@ -67,14 +77,14 @@ function Invoke-UninstallerWithStubs {
             function Stop-ScheduledTask {
                 [CmdletBinding()]
                 param([string]$TaskName, [string]$TaskPath)
-                $State.Calls.Add('Stop')
+                Add-StubCall 'Stop' $TaskName $TaskPath
                 if ($State.StopCompletes) { $State.State = 'Ready' }
             }
 
             function Unregister-ScheduledTask {
                 [CmdletBinding(SupportsShouldProcess = $true)]
                 param([string]$TaskName, [string]$TaskPath)
-                $State.Calls.Add('Unregister')
+                Add-StubCall 'Unregister' $TaskName $TaskPath
                 $State.Exists = $false
             }
 
@@ -83,6 +93,8 @@ function Invoke-UninstallerWithStubs {
     } catch {
         $caught = [string]$_.Exception.Message
     }
+    $script:StubCallCount += $state.Calls.Count
+    foreach ($wrong in $state.WrongTargets) { $script:WrongTargets.Add($wrong) }
 
     return [pscustomobject]@{
         Calls = @($state.Calls)
@@ -137,6 +149,10 @@ else { Fail 'stop timeout fails closed without unregistering' (Describe $r) }
 $r = Invoke-UninstallerWithStubs -Task @{ Exists = $true; State = 'Running'; HasDescription = $true; Description = $taskMarker; StopCompletes = $true } -WhatIf
 if ($null -eq $r.Error -and -not ($r.Calls -contains 'Stop') -and -not ($r.Calls -contains 'Unregister') -and $r.FinalExists -and $r.Output -match 'left unchanged') { Pass '-WhatIf leaves an owned running task untouched' }
 else { Fail '-WhatIf leaves an owned running task untouched' (Describe $r) }
+
+# Every stubbed call must target the documented task identity (docs/SCHEDULED-TASK.md).
+if ($script:StubCallCount -gt 0 -and $script:WrongTargets.Count -eq 0) { Pass ("all {0} stubbed calls target \{1}" -f $script:StubCallCount, $taskName) }
+else { Fail 'all stubbed calls target the documented task' ("calls={0} wrong=[{1}]" -f $script:StubCallCount, ($script:WrongTargets -join ',')) }
 
 # Stubs must have intercepted every Task Scheduler call: the real task must still be absent.
 if ($null -eq (Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue)) { Pass 'no real Scheduled Task was created or touched' }
