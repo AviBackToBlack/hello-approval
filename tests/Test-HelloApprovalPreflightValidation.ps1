@@ -272,6 +272,8 @@ try {
         [pscustomobject]@{Name='reserved-device CLOCK$ release tag';Args=@{ReleaseTag='CLOCK$'};Kind='release-tag-block'},
         [pscustomobject]@{Name='reserved-device NUL with extension release tag';Args=@{ReleaseTag='NUL.tar.gz'};Kind='release-tag-block'},
         [pscustomobject]@{Name='reserved-device NUL with space before extension release tag';Args=@{ReleaseTag='NUL .txt'};Kind='release-tag-block'},
+        [pscustomobject]@{Name='overlong-component release tag';Args=@{ReleaseTag=('v'+('x'*255))};Kind='release-tag-block'},
+        [pscustomobject]@{Name='MAX_PATH-exceeding composed runtime path release tag';Args=@{ReleaseTag=('v'+('x'*199))};Kind='release-tag-block'},
         [pscustomobject]@{Name='non-reserved COM10 release tag';Args=@{ReleaseTag='COM10'};Kind='release-tag-accepted'},
         [pscustomobject]@{Name='non-reserved CONSOLE release tag';Args=@{ReleaseTag='CONSOLE'};Kind='release-tag-accepted'},
         [pscustomobject]@{Name='non-reserved COM superscript-four release tag';Args=@{ReleaseTag=('COM'+[char]0x2074)};Kind='release-tag-accepted'},

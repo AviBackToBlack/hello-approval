@@ -151,10 +151,16 @@ try {
         Add-Finding -Severity 'BLOCK' -Check 'pin.upstream.release-tag' -Message 'Pin upstream.release_tag is missing, non-string, or not a usable Windows runtime path segment.' -Value $releaseTagValue
         throw 'Pinned upstream release tag is unusable.'
     }
-    Add-Finding -Severity 'PASS' -Check 'pin.upstream.release-tag' -Message 'Pin upstream release tag is usable as a runtime path segment.' -Value $releaseTag
-
     $runtimeRoot = Join-Path $env:LOCALAPPDATA ("hello-approval\runtime\sshenc\{0}" -f $releaseTag)
     $runtimeBin = Join-Path $runtimeRoot 'bin'
+    # Runtime consumers (Git gpg.ssh.program, Scheduled Task actions) are not guaranteed to be
+    # long-path aware, so every pinned runtime file path must fit in MAX_PATH (259 chars + NUL).
+    $longestRuntimeFilePath = (@($pin.installation_policy.installed_files) | ForEach-Object { (Join-Path $runtimeBin ([string]$_)).Length } | Measure-Object -Maximum).Maximum
+    if ($longestRuntimeFilePath -gt 259) {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.upstream.release-tag' -Message 'Pin upstream.release_tag makes pinned runtime file paths exceed the Windows MAX_PATH limit.' -Value $runtimeRoot
+        throw 'Pinned upstream release tag is unusable.'
+    }
+    Add-Finding -Severity 'PASS' -Check 'pin.upstream.release-tag' -Message 'Pin upstream release tag is usable as a runtime path segment.' -Value $releaseTag
     $expectedPipe = '\\.\pipe\sshenc-github-signing'
     $expectedPipeName = 'sshenc-github-signing'
     $configCandidates = @(
