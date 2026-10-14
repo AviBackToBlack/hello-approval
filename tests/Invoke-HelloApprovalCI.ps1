@@ -75,7 +75,6 @@ if ($PSCmdlet.ParameterSetName -eq 'Plan') {
     # -Suite only accepts this name shape, so reject any other shape at plan time with a clear error.
     $badNames = @(@($manifest.Keys) + $present | Where-Object { $_ -notmatch $SuiteNamePattern } | Sort-Object -Unique)
     $runnable = @($manifest.Keys | Where-Object { $present -contains $_ })
-    $absent = @($manifest.Keys | Where-Object { $present -notcontains $_ })
 
     $summary = @('## Windows PowerShell 5.1 acceptance plan', '', ('Engine: Windows PowerShell {0} ({1})' -f $engine, $PSVersionTable.PSEdition), '', '| Suite | Status | CI safety basis |', '|---|---|---|')
     foreach ($name in $manifest.Keys) {
