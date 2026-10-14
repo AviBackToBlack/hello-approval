@@ -150,7 +150,14 @@ try {
     if ($longestRuntimeFilePath -gt 259) {
         throw 'Refusing installation because pinned upstream.release_tag is missing, non-string, or not a usable Windows runtime path segment: runtime file paths would exceed MAX_PATH.'
     }
-
+    # Installation stages into a sibling ".<tag>.staging.<32 hex>" directory first, which is 42
+    # characters longer than the final root, so bound the staging form too (component and paths).
+    $stagingLeafTemplate = '.{0}.staging.{1}' -f $releaseTag, ('0' * 32)
+    $stagingBinTemplate = Join-Path (Join-Path $runtimeBase $stagingLeafTemplate) 'bin'
+    $longestStagingFilePath = (@($pin.installation_policy.installed_files) | ForEach-Object { (Join-Path $stagingBinTemplate ([string]$_)).Length } | Measure-Object -Maximum).Maximum
+    if ($stagingLeafTemplate.Length -gt 255 -or $longestStagingFilePath -gt 259) {
+        throw 'Refusing installation because pinned upstream.release_tag is missing, non-string, or not a usable Windows runtime path segment: staging paths would exceed MAX_PATH.'
+    }
     [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $runtimeRoot -ExpectedType Directory -AllowMissing)
 
     if (Test-Path -LiteralPath $runtimeRoot) {

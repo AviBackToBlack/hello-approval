@@ -331,7 +331,20 @@ try {
             $tagMutated = Test-Path -LiteralPath (Join-Path $tagLocal 'hello-approval\runtime')
             Assert-ReleaseTagCase $tagCase $tagResult $tagMutated 'runtime path construction'
         }
-    }
+
+        # Final runtime paths fit MAX_PATH but the 42-char-longer staging paths do not.
+        $stagingRoot = Join-Path $root 'release-tag-staging'
+        [void][IO.Directory]::CreateDirectory($stagingRoot)
+        $stagingFixture = New-SyntheticRepo -Root $stagingRoot
+        $stagingPinPath = Join-Path (Join-Path $stagingFixture.Repo 'provenance') 'sshenc-v0.6.101.json'
+        $stagingLocal = Join-Path $stagingRoot 'local'
+        $longestName = (@((Get-Content -LiteralPath $stagingPinPath -Raw | ConvertFrom-Json).installation_policy.installed_files) | ForEach-Object { ([string]$_).Length } | Measure-Object -Maximum).Maximum
+        $finalPrefix = (Join-Path $stagingLocal 'hello-approval\runtime\sshenc').Length + 1
+        $tagLength = 259 - $finalPrefix - '\bin\'.Length - $longestName - 10
+        $stagingCase = [pscustomobject]@{ Name = ('staging-only MAX_PATH overflow ({0}-char tag)' -f $tagLength); Mode = 'value'; Value = ('v' + ('x' * ($tagLength - 1))); Reject = $true }
+        Set-FixtureReleaseTag -PinPath $stagingPinPath -Mode $stagingCase.Mode -Value $stagingCase.Value
+        $stagingResult = Invoke-Installer -Installer $stagingFixture.Installer -Archive $stagingFixture.Archive -LocalAppData $stagingLocal -WhatIf
+        Assert-ReleaseTagCase $stagingCase $stagingResult (Test-Path -LiteralPath (Join-Path $stagingLocal 'hello-approval\runtime')) 'runtime path construction'    }
     Write-Host ''
     Write-Host ("RESULT passed={0} failed={1} mode={2}" -f $script:Passed,$script:Failed,$(if($ExpectedPhase1){'Phase1'}else{'Hardened'}))
     if ($script:Failed -ne 0) { exit 1 }
