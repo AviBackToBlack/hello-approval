@@ -47,7 +47,10 @@ function Test-PreflightReleaseTag {
     if ($name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) { return $false }
     if ([IO.Path]::IsPathRooted($name)) { return $false }
     if ($name.EndsWith('.') -or $name.EndsWith(' ')) { return $false }
-    if ($name -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$') { return $false }
+    # Union of reserved DOS device names across supported Windows releases (newer builds
+    # reserve fewer names in full paths), including superscript COM/LPT digits, console
+    # pseudo-devices, and the legacy "NAME .ext" form whose base trims trailing spaces.
+    if ($name -match '^(?i:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|CLOCK\$|(?:COM|LPT)[0-9\u00B9\u00B2\u00B3]) *(?:\..*)?$') { return $false }
     return $true
 }
 

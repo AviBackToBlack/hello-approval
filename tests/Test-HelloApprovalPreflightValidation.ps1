@@ -65,7 +65,8 @@ function New-Fixture {
         [switch]$NonStringReleaseTag,
         [switch]$TrailingDotReleaseTag,
         [switch]$ReservedDeviceReleaseTag,
-        [switch]$MissingDistribution
+        [switch]$MissingDistribution,
+        [AllowNull()][string]$ReleaseTag
     )
 
     $tool=Join-Path $Root 'tool'
@@ -155,9 +156,12 @@ function New-Fixture {
     if($NonStringReleaseTag){$pin.upstream.release_tag=$true}
     if($TrailingDotReleaseTag){$pin.upstream.release_tag='v-test.'}
     if($ReservedDeviceReleaseTag){$pin.upstream.release_tag='CON'}
+    if($PSBoundParameters.ContainsKey('ReleaseTag')){$pin.upstream.release_tag=$ReleaseTag}
     if($MissingDistribution){[void]$pin.installation_policy.Remove('allowed_distribution')}
     if(-not $PinMissing){
         $pinText=if($MalformedPinJson){'{ this is not valid json'}else{$pin|ConvertTo-Json -Depth 20}
+        # Keep the pin ASCII so non-ASCII fixture tags survive the reader's default PS5.1 encoding.
+        $pinText=[regex]::Replace($pinText,'[^\x00-\x7F]',{param($m) '\u{0:X4}' -f [int][char]$m.Value})
         [IO.File]::WriteAllText((Join-Path $prov 'sshenc-v0.6.101.json'),$pinText,[Text.UTF8Encoding]::new($false))
     }
     if($RuntimeMissing){
@@ -259,6 +263,18 @@ try {
         [pscustomobject]@{Name='non-string upstream release tag';Args=@{NonStringReleaseTag=$true};Kind='release-tag-block'},
         [pscustomobject]@{Name='trailing-dot upstream release tag';Args=@{TrailingDotReleaseTag=$true};Kind='release-tag-block'},
         [pscustomobject]@{Name='reserved-device upstream release tag';Args=@{ReservedDeviceReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device COM0 release tag';Args=@{ReleaseTag='COM0'};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device LPT0 release tag';Args=@{ReleaseTag='lpt0'};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device COM superscript-one release tag';Args=@{ReleaseTag=('COM'+[char]0x00B9)};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device LPT superscript-three release tag';Args=@{ReleaseTag=('LPT'+[char]0x00B3)};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device CONIN$ release tag';Args=@{ReleaseTag='CONIN$'};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device CONOUT$ with extension release tag';Args=@{ReleaseTag='conout$.log'};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device CLOCK$ release tag';Args=@{ReleaseTag='CLOCK$'};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device NUL with extension release tag';Args=@{ReleaseTag='NUL.tar.gz'};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device NUL with space before extension release tag';Args=@{ReleaseTag='NUL .txt'};Kind='release-tag-block'},
+        [pscustomobject]@{Name='non-reserved COM10 release tag';Args=@{ReleaseTag='COM10'};Kind='release-tag-accepted'},
+        [pscustomobject]@{Name='non-reserved CONSOLE release tag';Args=@{ReleaseTag='CONSOLE'};Kind='release-tag-accepted'},
+        [pscustomobject]@{Name='non-reserved COM superscript-four release tag';Args=@{ReleaseTag=('COM'+[char]0x2074)};Kind='release-tag-accepted'},
         [pscustomobject]@{Name='missing allowed distribution';Args=@{MissingDistribution=$true};Kind='distribution-block'},
         [pscustomobject]@{Name='Bin case-only directory mismatch';Args=@{BinCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='runtime file case-only mismatch';Args=@{FileCaseMismatch=$true};Kind='runtime-delta'},
@@ -330,6 +346,17 @@ try {
                 Pass ('{0} returns named structured BLOCK ({1})' -f $case.Name,$expectedCheck)
             } else {
                 Fail ('{0} returns named structured BLOCK ({1})' -f $case.Name,$expectedCheck) ('rc={0} blocked={1} findings={2}' -f $result.ExitCode,$result.Json.blocked,(($result.Json.findings | ConvertTo-Json -Depth 8) -join ''))
+            }
+            continue
+        }
+
+        if($case.Kind -eq 'release-tag-accepted'){
+            $tagBlocks=@($result.Json.findings | Where-Object { $_.severity -eq 'BLOCK' -and $_.check -eq 'pin.upstream.release-tag' }).Count
+            $tagPasses=@($result.Json.findings | Where-Object { $_.severity -eq 'PASS' -and $_.check -eq 'pin.upstream.release-tag' }).Count
+            if([string]$result.Json.schema -ceq 'hello-approval/preflight/v1' -and $tagBlocks -eq 0 -and $tagPasses -eq 1){
+                Pass ('{0} is accepted as a runtime path segment' -f $case.Name)
+            } else {
+                Fail ('{0} is accepted as a runtime path segment' -f $case.Name) ('rc={0} blocked={1} findings={2}' -f $result.ExitCode,$result.Json.blocked,(($result.Json.findings | ConvertTo-Json -Depth 8) -join ''))
             }
             continue
         }
