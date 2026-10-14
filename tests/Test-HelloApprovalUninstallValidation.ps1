@@ -294,6 +294,8 @@ try {
         [pscustomobject]@{Name='drive-qualified upstream release tag';Args=@{ReleaseTag='C:'};Mode='runtime';Kind='release-tag-reject'},
         [pscustomobject]@{Name='wildcard upstream release tag';Args=@{ReleaseTag='v*test'};Mode='runtime';Kind='release-tag-reject'},
         [pscustomobject]@{Name='trailing-dot upstream release tag';Args=@{ReleaseTag='v-test.'};Mode='runtime';Kind='release-tag-reject'},
+        [pscustomobject]@{Name='trailing-space upstream release tag';Args=@{ReleaseTag='v-test '};Mode='runtime';Kind='release-tag-reject'},
+        [pscustomobject]@{Name='overlong-component upstream release tag';Args=@{ReleaseTag=('v'+('x'*255))};Mode='runtime';Kind='release-tag-reject'},
         [pscustomobject]@{Name='reserved-device CONIN$ upstream release tag';Args=@{ReleaseTag='conin$'};Mode='runtime';Kind='release-tag-reject'},
         [pscustomobject]@{Name='reserved-device COM superscript-one upstream release tag';Args=@{ReleaseTag=('COM'+[char]0x00B9)};Mode='runtime';Kind='release-tag-reject'},
         [pscustomobject]@{Name='parent-directory upstream release tag without runtime removal';Args=@{ReleaseTag='..'};Mode='default';Kind='release-tag-reject'},
@@ -321,6 +323,12 @@ try {
                 else { Fail "$($case.Name) remains accepted under -WhatIf" (Describe-Result $result) }
             }
             'release-tag-reject' {
+                if($ExpectedPhase1){
+                    # Phase 1 had no release-tag gate; its outcome for these inputs is incidental (some accepted,
+                    # some rejected by unrelated errors), so there is no Phase 1 baseline to assert.
+                    Write-Host "SKIP  Phase1 has no release-tag gate: $($case.Name)"
+                    continue
+                }
                 $named = ($result.Output -join ' ') -match 'Refusing cleanup because pinned upstream\.release_tag is missing, non-string'
                 if($result.ExitCode -ne 0 -and $named){ Pass "hardened uninstall rejects $($case.Name) before runtime path construction" }
                 else { Fail "hardened uninstall rejects $($case.Name) before runtime path construction" (Describe-Result $result) }
