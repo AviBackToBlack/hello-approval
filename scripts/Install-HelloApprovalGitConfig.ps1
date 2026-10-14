@@ -157,6 +157,12 @@ if ($pin.installation_policy.allowed_distribution -ne 'zip-manual-placement') {
 
 $runtimeBase = Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA 'hello-approval') 'runtime') 'sshenc'
 $runtimeRoot = Join-Path $runtimeBase $releaseTag
+# Runtime consumers (Git gpg.ssh.program, Scheduled Task actions) are not guaranteed to be
+# long-path aware, so every pinned runtime file path must fit in MAX_PATH (259 chars + NUL).
+$longestRuntimeFilePath = (@($pin.installation_policy.installed_files) | ForEach-Object { (Join-Path (Join-Path $runtimeRoot 'bin') ([string]$_)).Length } | Measure-Object -Maximum).Maximum
+if ($longestRuntimeFilePath -gt 259) {
+    throw 'Refusing installation because pinned upstream.release_tag is missing, non-string, or not a usable Windows runtime path segment: runtime file paths would exceed MAX_PATH.'
+}
 $runtimeValidation = Assert-HelloApprovalPinnedRuntime -RuntimeRoot $runtimeRoot -Pin $pin -TrustedBase $env:LOCALAPPDATA
 $sshencPath = [IO.Path]::GetFullPath((Join-Path $runtimeValidation.BinPath 'sshenc.exe'))
 

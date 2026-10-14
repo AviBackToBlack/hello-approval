@@ -274,6 +274,8 @@ $releaseTagCases = @(
     [pscustomobject]@{ Name = 'trailing-dot'; Mode = 'value'; Value = 'v-test.'; Reject = $true },
     [pscustomobject]@{ Name = 'reserved-device CONIN$'; Mode = 'value'; Value = 'conin$'; Reject = $true },
     [pscustomobject]@{ Name = 'reserved-device COM superscript-one'; Mode = 'value'; Value = ('COM' + [char]0x00B9); Reject = $true },
+    [pscustomobject]@{ Name = 'overlong-component'; Mode = 'value'; Value = ('v' + ('x' * 255)); Reject = $true },
+    [pscustomobject]@{ Name = 'MAX_PATH-exceeding composed runtime path'; Mode = 'value'; Value = ('v' + ('x' * 199)); Reject = $true },
     [pscustomobject]@{ Name = 'non-reserved COM10'; Mode = 'value'; Value = 'COM10'; Reject = $false }
 )
 
