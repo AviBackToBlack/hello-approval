@@ -128,6 +128,7 @@ try {
         $lineNumber = 0
         foreach ($line in [IO.File]::ReadAllLines($file.FullName)) {
             $lineNumber++
+            if ($line -match '^\s*#') { continue }
             if ($line -match '\bGet-Command\b' -and $line -notmatch '\s-All\b') { $singleLookups += ('{0}:{1}' -f $file.Name, $lineNumber) }
         }
     }
@@ -163,7 +164,7 @@ try {
     if ($realGits.Count -lt 2) {
         Write-Host "SKIP  real multi-Git end-to-end checks need at least two git.exe on PATH; found $($realGits.Count)"
     } else {
-        $realDirs = @($realGits[0], $realGits[1] | ForEach-Object { Split-Path -Parent $_ })
+        $realDirs = @((Split-Path -Parent $realGits[0]), (Split-Path -Parent $realGits[1]))
         $local = Join-Path $root 'local'
         $app = Join-Path $root 'roaming'
         $profileDir = Join-Path $root 'profile'
