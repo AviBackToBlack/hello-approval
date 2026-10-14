@@ -13,8 +13,8 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 function Resolve-HelloApprovalGitExecutable {
-    # Normal PowerShell application resolution: the first git.exe in PATH order wins, exactly as an
-    # interactive shell would run it. Several Git installations on PATH are not an error. Callers
+    # Normal PowerShell application resolution: the first git.exe in PATH order wins (a git.cmd or
+    # git.bat shim is not preferred). Several Git installations on PATH are not an error. Callers
     # capture this one absolute path once and reuse it for every Git subprocess.
     $candidates = @(Get-Command git.exe -CommandType Application -All -ErrorAction SilentlyContinue)
     if ($candidates.Count -eq 0) {
@@ -81,10 +81,11 @@ $git = Resolve-HelloApprovalGitExecutable
 if ($null -eq $git) { throw 'Git was not found in PATH.' }
 Write-Verbose "Using Git executable: $git"
 
-$ghCommand = Get-Command gh.exe -CommandType Application -ErrorAction SilentlyContinue
-if ($null -eq $ghCommand) { $ghCommand = Get-Command gh -CommandType Application -ErrorAction SilentlyContinue }
-if ($null -eq $ghCommand) { throw 'GitHub CLI (gh) was not found in PATH.' }
-$gh = $ghCommand.Source
+# Same rule as Git: first gh.exe in PATH order, resolved once; several installations are not an error.
+$ghCandidates = @(Get-Command gh.exe -CommandType Application -All -ErrorAction SilentlyContinue)
+if ($ghCandidates.Count -eq 0) { $ghCandidates = @(Get-Command gh -CommandType Application -All -ErrorAction SilentlyContinue) }
+if ($ghCandidates.Count -eq 0) { throw 'GitHub CLI (gh) was not found in PATH.' }
+$gh = [string]$ghCandidates[0].Source
 
 $repoPath = [IO.Path]::GetFullPath($Repo)
 $isWorkTree = Get-OneLine -Result (Invoke-NativeCommand -Exe $git -Arguments @('-C', $repoPath, 'rev-parse', '--is-inside-work-tree') -Context 'Check repository worktree') -Context 'Check repository worktree'

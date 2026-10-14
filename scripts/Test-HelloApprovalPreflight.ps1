@@ -11,8 +11,8 @@ $findings = New-Object 'System.Collections.Generic.List[object]'
 $gitExe = $null
 
 function Resolve-HelloApprovalGitExecutable {
-    # Normal PowerShell application resolution: the first git.exe in PATH order wins, exactly as an
-    # interactive shell would run it. Several Git installations on PATH are not an error. Callers
+    # Normal PowerShell application resolution: the first git.exe in PATH order wins (a git.cmd or
+    # git.bat shim is not preferred). Several Git installations on PATH are not an error. Callers
     # capture this one absolute path once and reuse it for every Git subprocess.
     $candidates = @(Get-Command git.exe -CommandType Application -All -ErrorAction SilentlyContinue)
     if ($candidates.Count -eq 0) {

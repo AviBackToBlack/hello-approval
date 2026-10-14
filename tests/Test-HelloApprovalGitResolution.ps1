@@ -122,6 +122,42 @@ try {
         }
     }
 
+    # Every external tool lookup in scripts/ must enumerate all candidates and take the first.
+    $singleLookups = @()
+    foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'scripts') -Filter '*.ps1')) {
+        $lineNumber = 0
+        foreach ($line in [IO.File]::ReadAllLines($file.FullName)) {
+            $lineNumber++
+            if ($line -match '\bGet-Command\b' -and $line -notmatch '\s-All\b') { $singleLookups += ('{0}:{1}' -f $file.Name, $lineNumber) }
+        }
+    }
+    if ($singleLookups.Count -eq 0) { Pass 'every Get-Command tool lookup in scripts uses -All and first-result selection' }
+    else { Fail 'every Get-Command tool lookup in scripts uses -All and first-result selection' ($singleLookups -join ', ') }
+
+    # gh.exe resolution in the GitHub verification probe follows the same first-on-PATH rule.
+    $ghText = [IO.File]::ReadAllText((Join-Path $repoRoot 'scripts\Test-HelloApprovalGitHubVerification.ps1'))
+    $ghBlock = [regex]::Match($ghText, '(?s)\$ghCandidates = .*?\n\$gh = [^\n]*')
+    if (-not $ghBlock.Success) {
+        Fail 'gh.exe resolution selects the first gh.exe on PATH' 'resolution block not found'
+    } else {
+        $ghA = Join-Path $root 'gh-a'
+        $ghB = Join-Path $root 'gh-b'
+        foreach ($dir in @($ghA, $ghB)) {
+            [void][IO.Directory]::CreateDirectory($dir)
+            Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\where.exe') -Destination (Join-Path $dir 'gh.exe') -Force
+        }
+        $ghProbe = Join-Path $root 'probe-gh.ps1'
+        [IO.File]::WriteAllText($ghProbe, ("Set-StrictMode -Version 2.0`n`$ErrorActionPreference = 'Stop'`n" + $ghBlock.Value + "`n`$gh`n"), [Text.UTF8Encoding]::new($false))
+        foreach ($ghCase in @(
+            [pscustomobject]@{ Name = 'A first'; Path = "$ghA;$ghB;$noGitPath"; Expected = (Join-Path $ghA 'gh.exe') },
+            [pscustomobject]@{ Name = 'B first (reversed)'; Path = "$ghB;$ghA;$noGitPath"; Expected = (Join-Path $ghB 'gh.exe') }
+        )) {
+            $result = Invoke-WithPath -PathValue $ghCase.Path -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ghProbe)
+            $actual = ($result.Output -join '|')
+            if ($result.ExitCode -eq 0 -and $actual -ceq $ghCase.Expected) { Pass "gh.exe resolution selects the first gh.exe on PATH ($($ghCase.Name))" }
+            else { Fail "gh.exe resolution selects the first gh.exe on PATH ($($ghCase.Name))" ("rc={0} expected={1} actual={2}" -f $result.ExitCode, $ghCase.Expected, $actual) }
+        }
+    }
     # End-to-end with the host's actual Git installations, in both PATH orders.
     $realGits = @(Get-Command git.exe -CommandType Application -All -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.Source } | Select-Object -Unique)
     if ($realGits.Count -lt 2) {
@@ -169,12 +205,12 @@ try {
     foreach ($dir in @($noGitEnvironment.LOCALAPPDATA, $noGitEnvironment.APPDATA, $noGitEnvironment.USERPROFILE)) { [void][IO.Directory]::CreateDirectory($dir) }
 
     $preflight = Invoke-WithPath -PathValue $noGitPath -Environment $noGitEnvironment -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $repoRoot 'scripts\Test-HelloApprovalPreflight.ps1'), '-Json')
-    $preflightPresent = @(Get-JsonFinding $preflight 'git.present')
+    try { $preflightPresent = @(Get-JsonFinding $preflight 'git.present') } catch { $preflightPresent = @() }
     if ($preflightPresent.Count -eq 1 -and $preflightPresent[0].severity -eq 'WARN') { Pass 'Preflight keeps WARN git.present without Git' }
     else { Fail 'Preflight keeps WARN git.present without Git' (($preflightPresent | ConvertTo-Json -Compress -Depth 4) -join '') }
 
     $doctor = Invoke-WithPath -PathValue $noGitPath -Environment $noGitEnvironment -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $repoRoot 'scripts\Test-HelloApprovalDoctor.ps1'), '-Json')
-    $doctorPresent = @(Get-JsonFinding $doctor 'git.present')
+    try { $doctorPresent = @(Get-JsonFinding $doctor 'git.present') } catch { $doctorPresent = @() }
     if ($doctor.ExitCode -eq 2 -and $doctorPresent.Count -eq 1 -and $doctorPresent[0].severity -eq 'BLOCK') { Pass 'Doctor keeps BLOCK git.present without Git' }
     else { Fail 'Doctor keeps BLOCK git.present without Git' ("rc={0} present={1}" -f $doctor.ExitCode, (($doctorPresent | ConvertTo-Json -Compress -Depth 4) -join '')) }
 
