@@ -53,7 +53,9 @@ function New-Fixture {
         [switch]$MalformedUnusedName,
         [switch]$RuntimeMissing,
         [switch]$ValidationModuleMissing,
-        [switch]$PinMissing
+        [switch]$PinMissing,
+        [switch]$MalformedSystemGitConfig,
+        [switch]$MalformedGlobalGitConfig
     )
 
     $tool=Join-Path $Root 'tool'
@@ -140,7 +142,17 @@ function New-Fixture {
         Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
     }
 
+    $systemGitConfig=$null
+    if($MalformedSystemGitConfig){
+        $systemGitConfig=Join-Path $Root 'system.gitconfig'
+        [IO.File]::WriteAllText($systemGitConfig,"[core`n    broken = ",[Text.UTF8Encoding]::new($false))
+    }
+    if($MalformedGlobalGitConfig){
+        [IO.File]::WriteAllText((Join-Path $profile '.gitconfig'),"[core`n    broken = ",[Text.UTF8Encoding]::new($false))
+    }
+
     return [pscustomobject]@{
+        SystemGitConfig=$systemGitConfig
         Preflight=Join-Path $scripts 'Test-HelloApprovalPreflight.ps1'
         LocalAppData=$local
         AppData=$app
@@ -158,7 +170,9 @@ function Invoke-Preflight {
     $oldSocket=$env:SSHENC_AGENT_SOCKET
     $oldAuth=$env:SSH_AUTH_SOCK
     $oldGitSsh=$env:GIT_SSH_COMMAND
+    $oldGitSystem=$env:GIT_CONFIG_SYSTEM
     try {
+        if($null -ne $Fixture.SystemGitConfig){$env:GIT_CONFIG_SYSTEM=$Fixture.SystemGitConfig}
         $env:LOCALAPPDATA=$Fixture.LocalAppData
         $env:APPDATA=$Fixture.AppData
         $env:USERPROFILE=$Fixture.UserProfile
@@ -184,6 +198,7 @@ function Invoke-Preflight {
         if($null -eq $oldSocket){Remove-Item Env:SSHENC_AGENT_SOCKET -ErrorAction SilentlyContinue}else{$env:SSHENC_AGENT_SOCKET=$oldSocket}
         if($null -eq $oldAuth){Remove-Item Env:SSH_AUTH_SOCK -ErrorAction SilentlyContinue}else{$env:SSH_AUTH_SOCK=$oldAuth}
         if($null -eq $oldGitSsh){Remove-Item Env:GIT_SSH_COMMAND -ErrorAction SilentlyContinue}else{$env:GIT_SSH_COMMAND=$oldGitSsh}
+        if($null -eq $oldGitSystem){Remove-Item Env:GIT_CONFIG_SYSTEM -ErrorAction SilentlyContinue}else{$env:GIT_CONFIG_SYSTEM=$oldGitSystem}
     }
 }
 
@@ -224,6 +239,8 @@ try {
         [pscustomobject]@{Name='missing runtime';Args=@{RuntimeMissing=$true};Kind='missing'},
         [pscustomobject]@{Name='missing validation module';Args=@{ValidationModuleMissing=$true};Kind='module-migration'},
         [pscustomobject]@{Name='missing provenance pin';Args=@{PinMissing=$true};Kind='required-structured-block'},
+        [pscustomobject]@{Name='unreadable system Git config';Args=@{MalformedSystemGitConfig=$true};Kind='git-scope-unreadable';Scope='system'},
+        [pscustomobject]@{Name='unreadable global Git config';Args=@{MalformedGlobalGitConfig=$true};Kind='git-scope-unreadable';Scope='global'},
         [pscustomobject]@{Name='Bin case-only directory mismatch';Args=@{BinCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='runtime file case-only mismatch';Args=@{FileCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='hello-approval project-root junction';Args=@{ProjectRootThroughJunction=$true};Kind='runtime-delta'},
@@ -283,6 +300,30 @@ try {
             continue
         }
 
+        if($case.Kind -eq 'git-scope-unreadable'){
+            # A malformed file in any scope makes every git config read fatal, so completeness is
+            # asserted across both scopes and the BLOCK must name the actual offending file.
+            $gitKeys=@('core.sshCommand','gpg.format','gpg.ssh.program','gpg.ssh.allowedSignersFile','user.signingkey','commit.gpgsign','tag.gpgsign','user.name','user.email')
+            $brokenLeaf=if($case.Scope -eq 'system'){'system.gitconfig'}else{'.gitconfig'}
+            $readable=@($result.Json.findings | Where-Object { $_.severity -eq 'BLOCK' -and $_.check -like 'git.*.readable' })
+            $namesFile=@($readable | Where-Object { [string]$_.value -match [regex]::Escape($brokenLeaf) }).Count -eq $readable.Count
+            $complete=$true
+            foreach($scope in @('system','global')){
+                $scopeBlocked=@($readable | Where-Object { $_.check -eq ('git.{0}.readable' -f $scope) }).Count -gt 0
+                foreach($k in $gitKeys){
+                    $keyFindings=@($result.Json.findings | Where-Object { $_.check -eq ('git.{0}.{1}' -f $scope,$k) })
+                    if($keyFindings.Count -ne 1){ $complete=$false; continue }
+                    if($scopeBlocked -and -not ($keyFindings[0].severity -eq 'INFO' -and [string]$keyFindings[0].message -match 'not evaluated')){ $complete=$false }
+                }
+            }
+            $hasError=$null -ne $result.Json.PSObject.Properties['error']
+            if((Is-StructuredBlockedResult $result) -and $readable.Count -ge 1 -and $namesFile -and $complete -and -not $hasError){
+                Pass ('{0} keeps BLOCK, names the broken file, and accounts for every Git probe' -f $case.Name)
+            } else {
+                Fail ('{0} keeps BLOCK, names the broken file, and accounts for every Git probe' -f $case.Name) ('rc={0} blocked={1} readable={2} namesFile={3} complete={4} error={5}' -f $result.ExitCode,$result.Json.blocked,$readable.Count,$namesFile,$complete,$hasError)
+            }
+            continue
+        }
         if($case.Kind -eq 'runtime-delta'){
             if($ExpectedPhase1){
                 if(-not (Has-RuntimeBlock $result)){
