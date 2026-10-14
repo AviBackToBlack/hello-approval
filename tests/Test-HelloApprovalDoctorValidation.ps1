@@ -77,7 +77,13 @@ function New-Fixture {
         [switch]$RuntimeMissing,
         [switch]$AgentHashMismatch,
         [switch]$ExtraRuntimeRootEntry,
-        [switch]$ValidationModuleMissing
+        [switch]$ValidationModuleMissing,
+        [switch]$MalformedPinJson,
+        [switch]$NullPinJson,
+        [switch]$MissingUpstream,
+        [switch]$MissingReleaseTag,
+        [switch]$NonStringReleaseTag,
+        [AllowNull()][string]$ReleaseTag
     )
 
     $tool = Join-Path $Root 'tool'
@@ -209,7 +215,14 @@ function New-Fixture {
             installed_files=@('sshenc.exe','sshenc-agent.exe')
         }
     }
-    [IO.File]::WriteAllText((Join-Path $prov 'sshenc-v0.6.101.json'),($pin|ConvertTo-Json -Depth 20),[Text.UTF8Encoding]::new($false))
+    if($MissingUpstream){[void]$pin.Remove('upstream')}
+    if($MissingReleaseTag){[void]$pin.upstream.Remove('release_tag')}
+    if($NonStringReleaseTag){$pin.upstream.release_tag=$true}
+    if($PSBoundParameters.ContainsKey('ReleaseTag')){$pin.upstream.release_tag=$ReleaseTag}
+    $pinText=if($MalformedPinJson){'{ this is not valid json'}elseif($NullPinJson){'null'}else{$pin|ConvertTo-Json -Depth 20}
+    # Keep the pin ASCII so non-ASCII fixture tags survive the reader's default PS5.1 encoding.
+    $pinText=[regex]::Replace($pinText,'[^\x00-\x7F]',{param($m) '\u{0:X4}' -f [int][char]$m.Value})
+    [IO.File]::WriteAllText((Join-Path $prov 'sshenc-v0.6.101.json'),$pinText,[Text.UTF8Encoding]::new($false))
 
     if($AgentHashMismatch){
         [IO.File]::WriteAllBytes($agent,[byte[]](1,2,3,4))
@@ -312,6 +325,21 @@ try {
         [pscustomobject]@{Name='launcher app directory junction';Args=@{LauncherAppThroughJunction=$true};Kind='launcher-junction'},
         [pscustomobject]@{Name='signing public key through .ssh junction';Args=@{PublicKeyThroughJunction=$true};Kind='public-key-junction'},
         [pscustomobject]@{Name='malformed unused pin leaf name';Args=@{MalformedUnusedName=$true};Kind='pin-delta'},
+        [pscustomobject]@{Name='malformed provenance JSON';Args=@{MalformedPinJson=$true};Kind='provenance-block';Check='pin.parse'},
+        [pscustomobject]@{Name='null provenance JSON';Args=@{NullPinJson=$true};Kind='provenance-block';Check='pin.upstream.release-tag'},
+        [pscustomobject]@{Name='missing upstream object';Args=@{MissingUpstream=$true};Kind='provenance-block';Check='pin.upstream.release-tag'},
+        [pscustomobject]@{Name='missing upstream release tag';Args=@{MissingReleaseTag=$true};Kind='provenance-block';Check='pin.upstream.release-tag'},
+        [pscustomobject]@{Name='non-string upstream release tag';Args=@{NonStringReleaseTag=$true};Kind='provenance-block';Check='pin.upstream.release-tag'},
+        [pscustomobject]@{Name='blank upstream release tag';Args=@{ReleaseTag='   '};Kind='provenance-block';Check='pin.upstream.release-tag'},
+        [pscustomobject]@{Name='traversal upstream release tag';Args=@{ReleaseTag='..\escape'};Kind='provenance-block';Check='pin.upstream.release-tag'},
+        [pscustomobject]@{Name='parent-directory upstream release tag';Args=@{ReleaseTag='..'};Kind='provenance-block';Check='pin.upstream.release-tag'},
+        [pscustomobject]@{Name='drive-qualified upstream release tag';Args=@{ReleaseTag='C:'};Kind='provenance-block';Check='pin.upstream.release-tag'},
+        [pscustomobject]@{Name='wildcard upstream release tag';Args=@{ReleaseTag='v*test'};Kind='provenance-block';Check='pin.upstream.release-tag'},
+        [pscustomobject]@{Name='trailing-dot upstream release tag';Args=@{ReleaseTag='v-test.'};Kind='provenance-block';Check='pin.upstream.release-tag'},
+        [pscustomobject]@{Name='reserved-device CONIN$ release tag';Args=@{ReleaseTag='conin$'};Kind='provenance-block';Check='pin.upstream.release-tag'},
+        [pscustomobject]@{Name='reserved-device COM superscript-one release tag';Args=@{ReleaseTag=('COM'+[char]0x00B9)};Kind='provenance-block';Check='pin.upstream.release-tag'},
+        [pscustomobject]@{Name='reserved-device NUL with space before extension release tag';Args=@{ReleaseTag='NUL .txt'};Kind='provenance-block';Check='pin.upstream.release-tag'},
+        [pscustomobject]@{Name='non-reserved COM10 release tag';Args=@{ReleaseTag='COM10'};Kind='release-tag-accepted'},
         [pscustomobject]@{Name='agent hash mismatch';Args=@{AgentHashMismatch=$true};Kind='composition-parity'},
         [pscustomobject]@{Name='extra runtime root entry';Args=@{ExtraRuntimeRootEntry=$true};Kind='composition-parity'}
     )
@@ -328,6 +356,27 @@ try {
         }
 
         switch($case.Kind){
+            'provenance-block' {
+                $label = ('hardened Doctor classifies {0} as structured {1} BLOCK' -f $case.Name,$case.Check)
+                $structured = ($result.ExitCode -eq 2 -and
+                    [string]$result.Json.schema -ceq 'hello-approval/doctor/v1' -and
+                    -not [bool]$result.Json.healthy)
+                $named = @($result.Json.findings | Where-Object { $_.severity -eq 'BLOCK' -and $_.check -eq $case.Check }).Count
+                $runtimeFindings = @($result.Json.findings | Where-Object { [string]$_.check -like 'runtime.*' }).Count
+                if($structured -and $named -eq 1 -and $runtimeFindings -eq 0){
+                    Pass $label
+                } else {
+                    Fail $label ('rc={0} healthy={1} named={2} runtime={3} findings={4}' -f $result.ExitCode,$result.Json.healthy,$named,$runtimeFindings,(($result.Json.findings | ConvertTo-Json -Depth 8) -join ''))
+                }
+            }
+            'release-tag-accepted' {
+                $label = ('hardened Doctor accepts {0} as a runtime path segment' -f $case.Name)
+                if((Has-Finding $result 'PASS' 'pin.upstream.release-tag') -and -not (Has-Finding $result 'BLOCK' 'pin.upstream.release-tag')){
+                    Pass $label
+                } else {
+                    Fail $label (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
+                }
+            }
             'exact' {
                 if((Has-Finding $result 'PASS' 'runtime.sshenc.exe') -and
                    (Has-Finding $result 'PASS' 'trust.ownership') -and
