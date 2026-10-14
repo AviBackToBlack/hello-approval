@@ -83,6 +83,8 @@ function New-Fixture {
         [switch]$MissingUpstream,
         [switch]$MissingReleaseTag,
         [switch]$NonStringReleaseTag,
+        [switch]$PinMissing,
+        [switch]$NonObjectUpstream,
         [AllowNull()][string]$ReleaseTag
     )
 
@@ -218,11 +220,16 @@ function New-Fixture {
     if($MissingUpstream){[void]$pin.Remove('upstream')}
     if($MissingReleaseTag){[void]$pin.upstream.Remove('release_tag')}
     if($NonStringReleaseTag){$pin.upstream.release_tag=$true}
+    if($NonObjectUpstream){$pin.upstream='v-test'}
     if($PSBoundParameters.ContainsKey('ReleaseTag')){$pin.upstream.release_tag=$ReleaseTag}
     $pinText=if($MalformedPinJson){'{ this is not valid json'}elseif($NullPinJson){'null'}else{$pin|ConvertTo-Json -Depth 20}
     # Keep the pin ASCII so non-ASCII fixture tags survive the reader's default PS5.1 encoding.
     $pinText=[regex]::Replace($pinText,'[^\x00-\x7F]',{param($m) '\u{0:X4}' -f [int][char]$m.Value})
-    [IO.File]::WriteAllText((Join-Path $prov 'sshenc-v0.6.101.json'),$pinText,[Text.UTF8Encoding]::new($false))
+    if($PinMissing){
+        Remove-Item -LiteralPath (Join-Path $prov 'sshenc-v0.6.101.json') -Force
+    } else {
+        [IO.File]::WriteAllText((Join-Path $prov 'sshenc-v0.6.101.json'),$pinText,[Text.UTF8Encoding]::new($false))
+    }
 
     if($AgentHashMismatch){
         [IO.File]::WriteAllBytes($agent,[byte[]](1,2,3,4))
@@ -326,6 +333,10 @@ try {
         [pscustomobject]@{Name='signing public key through .ssh junction';Args=@{PublicKeyThroughJunction=$true};Kind='public-key-junction'},
         [pscustomobject]@{Name='malformed unused pin leaf name';Args=@{MalformedUnusedName=$true};Kind='pin-delta'},
         [pscustomobject]@{Name='malformed provenance JSON';Args=@{MalformedPinJson=$true};Kind='provenance-block';Check='pin.parse'},
+        [pscustomobject]@{Name='missing provenance pin';Args=@{PinMissing=$true};Kind='provenance-block';Check='pin.present'},
+        [pscustomobject]@{Name='non-object upstream';Args=@{NonObjectUpstream=$true};Kind='provenance-block';Check='pin.upstream.release-tag'},
+        [pscustomobject]@{Name='overlong-component upstream release tag';Args=@{ReleaseTag=('v'+('x'*255))};Kind='provenance-block';Check='pin.upstream.release-tag'},
+        [pscustomobject]@{Name='MAX_PATH-exceeding composed runtime path release tag';Args=@{ReleaseTag=('v'+('x'*199))};Kind='provenance-block';Check='pin.upstream.release-tag'},
         [pscustomobject]@{Name='null provenance JSON';Args=@{NullPinJson=$true};Kind='provenance-block';Check='pin.upstream.release-tag'},
         [pscustomobject]@{Name='missing upstream object';Args=@{MissingUpstream=$true};Kind='provenance-block';Check='pin.upstream.release-tag'},
         [pscustomobject]@{Name='missing upstream release tag';Args=@{MissingReleaseTag=$true};Kind='provenance-block';Check='pin.upstream.release-tag'},

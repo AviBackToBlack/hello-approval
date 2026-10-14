@@ -448,6 +448,10 @@ try {
     }
 
     $pinPath = Join-Path (Join-Path $repoRoot 'provenance') 'sshenc-v0.6.101.json'
+    if (-not (Test-Path -LiteralPath $pinPath -PathType Leaf)) {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.present' -Message 'Pinned provenance JSON is missing.' -Value $pinPath
+        throw 'provenance-unusable'
+    }
     try {
         $pin = Get-Content -LiteralPath $pinPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
     } catch {
@@ -471,12 +475,18 @@ try {
         throw 'provenance-unusable'
     }
     $releaseTag = [string]$releaseTagValue
-    Add-Finding -Severity 'PASS' -Check 'pin.upstream.release-tag' -Message 'Pin upstream release tag is usable as a runtime path segment.' -Value $releaseTag
 
-    $runtimeRoot =Join-Path (Join-Path (Join-Path $projectRoot 'runtime') 'sshenc') $releaseTag
+    $runtimeRoot = Join-Path (Join-Path (Join-Path $projectRoot 'runtime') 'sshenc') $releaseTag
     $runtimeBin = Join-Path $runtimeRoot 'bin'
     $sshencPath = Join-Path $runtimeBin 'sshenc.exe'
     $agentPath = Join-Path $runtimeBin 'sshenc-agent.exe'
+    # Runtime consumers (Git gpg.ssh.program, Scheduled Task actions) are not guaranteed to be
+    # long-path aware, so the runtime file paths Doctor uses must fit in MAX_PATH (259 chars + NUL).
+    if ([Math]::Max($sshencPath.Length, $agentPath.Length) -gt 259) {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.upstream.release-tag' -Message 'Pin upstream.release_tag makes pinned runtime file paths exceed the Windows MAX_PATH limit.' -Value $runtimeRoot
+        throw 'provenance-unusable'
+    }
+    Add-Finding -Severity 'PASS' -Check 'pin.upstream.release-tag' -Message 'Pin upstream release tag is usable as a runtime path segment.' -Value $releaseTag
 
     $configPath = $null
     $runtimeValidation = $null
