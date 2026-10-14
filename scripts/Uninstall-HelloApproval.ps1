@@ -15,6 +15,17 @@ $SigningSchema = 'hello-approval/ha-1.4/v1'
 $VerificationSchema = 'hello-approval/ha-1.5/v1'
 $TrustMarker = "# $VerificationSchema"
 
+function Resolve-HelloApprovalGitExecutable {
+    # Normal PowerShell application resolution: the first git.exe in PATH order wins, exactly as an
+    # interactive shell would run it. Several Git installations on PATH are not an error. Callers
+    # capture this one absolute path once and reuse it for every Git subprocess.
+    $candidates = @(Get-Command git.exe -CommandType Application -All -ErrorAction SilentlyContinue)
+    if ($candidates.Count -eq 0) {
+        $candidates = @(Get-Command git -CommandType Application -All -ErrorAction SilentlyContinue)
+    }
+    if ($candidates.Count -eq 0) { return $null }
+    return [string]$candidates[0].Source
+}
 function Test-WindowsPathEqual {
     param(
         [Parameter(Mandatory = $true)][string]$Left,
@@ -227,10 +238,9 @@ $pin = Get-Content -LiteralPath $pinPath -Raw | ConvertFrom-Json
 $releaseTag = [string]$pin.upstream.release_tag
 $runtimeRoot = Join-Path $projectRoot ("runtime\sshenc\{0}" -f $releaseTag)
 
-$gitCommand = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue
-if ($null -eq $gitCommand) { $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue }
-if ($null -eq $gitCommand) { throw 'Git executable is required for conservative Git cleanup.' }
-$git = $gitCommand.Source
+$git = Resolve-HelloApprovalGitExecutable
+if ($null -eq $git) { throw 'Git executable is required for conservative Git cleanup.' }
+Write-Verbose "Using Git executable: $git"
 
 $signingConfigGit = $signingConfig -replace '\\','/'
 $verificationConfigGit = $verificationConfig -replace '\\','/'

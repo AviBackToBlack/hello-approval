@@ -12,6 +12,17 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+function Resolve-HelloApprovalGitExecutable {
+    # Normal PowerShell application resolution: the first git.exe in PATH order wins, exactly as an
+    # interactive shell would run it. Several Git installations on PATH are not an error. Callers
+    # capture this one absolute path once and reuse it for every Git subprocess.
+    $candidates = @(Get-Command git.exe -CommandType Application -All -ErrorAction SilentlyContinue)
+    if ($candidates.Count -eq 0) {
+        $candidates = @(Get-Command git -CommandType Application -All -ErrorAction SilentlyContinue)
+    }
+    if ($candidates.Count -eq 0) { return $null }
+    return [string]$candidates[0].Source
+}
 function Invoke-NativeCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Exe,
@@ -66,10 +77,9 @@ if ($Repository -notmatch '\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z') {
     throw "Repository must be an exact GitHub owner/name pair, got: $Repository"
 }
 
-$gitCommand = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue
-if ($null -eq $gitCommand) { $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue }
-if ($null -eq $gitCommand) { throw 'Git was not found in PATH.' }
-$git = $gitCommand.Source
+$git = Resolve-HelloApprovalGitExecutable
+if ($null -eq $git) { throw 'Git was not found in PATH.' }
+Write-Verbose "Using Git executable: $git"
 
 $ghCommand = Get-Command gh.exe -CommandType Application -ErrorAction SilentlyContinue
 if ($null -eq $ghCommand) { $ghCommand = Get-Command gh -CommandType Application -ErrorAction SilentlyContinue }

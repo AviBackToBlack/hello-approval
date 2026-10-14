@@ -24,6 +24,17 @@ $GitRepositoryRoutingEnvironmentNames = @(
     'GIT_NAMESPACE'
 )
 
+function Resolve-HelloApprovalGitExecutable {
+    # Normal PowerShell application resolution: the first git.exe in PATH order wins, exactly as an
+    # interactive shell would run it. Several Git installations on PATH are not an error. Callers
+    # capture this one absolute path once and reuse it for every Git subprocess.
+    $candidates = @(Get-Command git.exe -CommandType Application -All -ErrorAction SilentlyContinue)
+    if ($candidates.Count -eq 0) {
+        $candidates = @(Get-Command git -CommandType Application -All -ErrorAction SilentlyContinue)
+    }
+    if ($candidates.Count -eq 0) { return $null }
+    return [string]$candidates[0].Source
+}
 function Invoke-GitCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Git,
@@ -181,10 +192,9 @@ if (-not (Test-Path -LiteralPath $validationModulePath -PathType Leaf)) {
 }
 Import-Module $validationModulePath -Force -ErrorAction Stop
 
-$gitCommand = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue
-if ($null -eq $gitCommand) { $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue }
-if ($null -eq $gitCommand) { throw 'Git was not found in PATH.' }
-$git = $gitCommand.Source
+$git = Resolve-HelloApprovalGitExecutable
+if ($null -eq $git) { throw 'Git was not found in PATH.' }
+Write-Verbose "Using Git executable: $git"
 $verifierPaths = Get-StockOpenSshVerifierPaths -GitPath $git
 $systemSshKeygen = Assert-RegularFile -Path $verifierPaths.Direct -Purpose 'stock Windows OpenSSH verifier'
 $verificationProgram = $verifierPaths.GitProgram -replace '\\','/'
@@ -273,6 +283,7 @@ Write-Host "Trust: $trust"
 Write-Host "Trust store: $allowedPath"
 Write-Host "Verifier (direct): $systemSshKeygen"
 Write-Host "Verifier (Git $($verifierPaths.GitBitness)-bit): $($verifierPaths.GitProgram)"
+Write-Host "Git executable: $git"
 Write-Host 'Note: the allowed_signers principal is a local trust label for the key; it is not automatically compared with Git author/committer identity.'
 Write-Host '--- git log --show-signature ---'
 $display.Output | ForEach-Object { Write-Host $_ }

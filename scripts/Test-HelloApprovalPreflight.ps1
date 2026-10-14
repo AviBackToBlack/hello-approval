@@ -10,6 +10,17 @@ $ErrorActionPreference = 'Stop'
 $findings = New-Object 'System.Collections.Generic.List[object]'
 $gitExe = $null
 
+function Resolve-HelloApprovalGitExecutable {
+    # Normal PowerShell application resolution: the first git.exe in PATH order wins, exactly as an
+    # interactive shell would run it. Several Git installations on PATH are not an error. Callers
+    # capture this one absolute path once and reuse it for every Git subprocess.
+    $candidates = @(Get-Command git.exe -CommandType Application -All -ErrorAction SilentlyContinue)
+    if ($candidates.Count -eq 0) {
+        $candidates = @(Get-Command git -CommandType Application -All -ErrorAction SilentlyContinue)
+    }
+    if ($candidates.Count -eq 0) { return $null }
+    return [string]$candidates[0].Source
+}
 function Add-Finding {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('PASS', 'INFO', 'WARN', 'BLOCK')][string]$Severity,
@@ -241,11 +252,10 @@ try {
         Add-Finding -Severity 'INFO' -Check 'ssh.config' -Message 'User SSH config does not exist.' -Value $sshConfigPath
     }
 
-    $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue
-    if ($null -eq $gitCommand) {
+    $gitExe = Resolve-HelloApprovalGitExecutable
+    if ($null -eq $gitExe) {
         Add-Finding -Severity 'WARN' -Check 'git.present' -Message 'Git was not found in PATH; Git configuration preflight was skipped.'
     } else {
-        $gitExe = $gitCommand.Source
         Add-Finding -Severity 'PASS' -Check 'git.present' -Message 'Git is available.' -Value $gitExe
         foreach ($scope in @('system', 'global')) {
             foreach ($key in @(

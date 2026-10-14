@@ -14,6 +14,17 @@ $PublicKeyLeaf = 'github-signing.pub'
 $ExpectedKeyType = 'sk-ecdsa-sha2-nistp256@openssh.com'
 $OwnedKeys = @('gpg.format', 'gpg.ssh.program', 'user.signingkey')
 
+function Resolve-HelloApprovalGitExecutable {
+    # Normal PowerShell application resolution: the first git.exe in PATH order wins, exactly as an
+    # interactive shell would run it. Several Git installations on PATH are not an error. Callers
+    # capture this one absolute path once and reuse it for every Git subprocess.
+    $candidates = @(Get-Command git.exe -CommandType Application -All -ErrorAction SilentlyContinue)
+    if ($candidates.Count -eq 0) {
+        $candidates = @(Get-Command git -CommandType Application -All -ErrorAction SilentlyContinue)
+    }
+    if ($candidates.Count -eq 0) { return $null }
+    return [string]$candidates[0].Source
+}
 function Ensure-TrustedDirectory {
     param(
         [Parameter(Mandatory = $true)][string]$TrustedBase,
@@ -108,10 +119,9 @@ if ($env:OS -ne 'Windows_NT') { throw 'Install-HelloApprovalGitConfig.ps1 suppor
 if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw 'LOCALAPPDATA is not available.' }
 if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { throw 'USERPROFILE is not available.' }
 
-$gitCommand = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue
-if ($null -eq $gitCommand) { $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue }
-if ($null -eq $gitCommand) { throw 'Git was not found in PATH.' }
-$git = $gitCommand.Source
+$git = Resolve-HelloApprovalGitExecutable
+if ($null -eq $git) { throw 'Git was not found in PATH.' }
+Write-Verbose "Using Git executable: $git"
 [void](Invoke-GitCommand -Git $git -Arguments @('--version') -Context 'Git executable version probe')
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
