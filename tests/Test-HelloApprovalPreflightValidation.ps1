@@ -170,13 +170,16 @@ function Invoke-Preflight {
     $oldSocket=$env:SSHENC_AGENT_SOCKET
     $oldAuth=$env:SSH_AUTH_SOCK
     $oldGitSsh=$env:GIT_SSH_COMMAND
-    $gitSourceNames=@(@('XDG_CONFIG_HOME','GIT_CONFIG_SYSTEM') + @(Get-ChildItem Env: | Where-Object { $_.Name -eq 'GIT_CONFIG' -or $_.Name -like 'GIT_CONFIG_*' } | ForEach-Object { $_.Name }) | Select-Object -Unique)
+    $gitSourceNames=@(@('XDG_CONFIG_HOME','GIT_CONFIG_SYSTEM','GIT_CONFIG_GLOBAL') + @(Get-ChildItem Env: | Where-Object { $_.Name -eq 'GIT_CONFIG' -or $_.Name -like 'GIT_CONFIG_*' } | ForEach-Object { $_.Name }) | Select-Object -Unique)
     $oldGitSources=@{}
     foreach($name in $gitSourceNames){ $oldGitSources[$name]=[Environment]::GetEnvironmentVariable($name,'Process') }
     try {
-        # Fixture HOME/USERPROFILE (plus an optional fixture system file) must be the only Git config sources in play.
+        # Fixture files must be the only Git config sources in play. GIT_CONFIG_NOSYSTEM would not keep the host
+        # system file out of explicit --system reads, so the system scope is always pinned: to the fixture file
+        # when one is supplied, otherwise to an absent fixture path (Git treats a missing file as empty).
         foreach($name in $gitSourceNames){ [Environment]::SetEnvironmentVariable($name,$null,'Process') }
-        if($null -ne $Fixture.SystemGitConfig){$env:GIT_CONFIG_SYSTEM=$Fixture.SystemGitConfig}
+        $env:GIT_CONFIG_SYSTEM=if($null -ne $Fixture.SystemGitConfig){$Fixture.SystemGitConfig}else{Join-Path $Fixture.UserProfile 'absent-system.gitconfig'}
+        $env:GIT_CONFIG_GLOBAL=Join-Path $Fixture.UserProfile '.gitconfig'
         $env:LOCALAPPDATA=$Fixture.LocalAppData
         $env:APPDATA=$Fixture.AppData
         $env:USERPROFILE=$Fixture.UserProfile
