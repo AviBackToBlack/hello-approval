@@ -75,7 +75,10 @@ function New-Fixture {
         [switch]$MalformedUnusedName,
         [switch]$RuntimeMissing,
         [switch]$ValidationModuleMissing,
-        [switch]$IncludeLauncher
+        [switch]$IncludeLauncher,
+        [switch]$MissingReleaseTag,
+        [switch]$NonStringReleaseTag,
+        [AllowNull()][string]$ReleaseTag
     )
 
     $tool = Join-Path $Root 'tool'
@@ -159,7 +162,13 @@ function New-Fixture {
             installed_files=@('sshenc.exe','sshenc-agent.exe')
         }
     }
-    [IO.File]::WriteAllText((Join-Path $prov 'sshenc-v0.6.101.json'),($pin|ConvertTo-Json -Depth 20),[Text.UTF8Encoding]::new($false))
+    if($MissingReleaseTag){[void]$pin.upstream.Remove('release_tag')}
+    if($NonStringReleaseTag){$pin.upstream.release_tag=$true}
+    if($PSBoundParameters.ContainsKey('ReleaseTag')){$pin.upstream.release_tag=$ReleaseTag}
+    $pinText=$pin|ConvertTo-Json -Depth 20
+    # Keep the pin ASCII so non-ASCII fixture tags survive the reader's default PS5.1 encoding.
+    $pinText=[regex]::Replace($pinText,'[^\x00-\x7F]',{param($m) '\u{0:X4}' -f [int][char]$m.Value})
+    [IO.File]::WriteAllText((Join-Path $prov 'sshenc-v0.6.101.json'),$pinText,[Text.UTF8Encoding]::new($false))
 
     if($RuntimeMissing){ Remove-Item -LiteralPath $runtimeRoot -Recurse -Force }
 
@@ -276,6 +285,19 @@ try {
         [pscustomobject]@{Name='runtime parent junction';Args=@{RuntimeParentThroughJunction=$true};Mode='runtime';Kind='ancestry-delta'},
         [pscustomobject]@{Name='missing runtime below runtime-parent junction';Args=@{RuntimeParentThroughJunction=$true;RuntimeMissing=$true};Mode='runtime';Kind='ancestry-delta'},
         [pscustomobject]@{Name='malformed unused pin leaf name';Args=@{MalformedUnusedName=$true};Mode='runtime';Kind='pin-delta'},
+        [pscustomobject]@{Name='missing upstream release tag';Args=@{MissingReleaseTag=$true};Mode='runtime';Kind='release-tag-reject'},
+        [pscustomobject]@{Name='non-string upstream release tag';Args=@{NonStringReleaseTag=$true};Mode='runtime';Kind='release-tag-reject'},
+        [pscustomobject]@{Name='blank upstream release tag';Args=@{ReleaseTag='   '};Mode='runtime';Kind='release-tag-reject'},
+        [pscustomobject]@{Name='current-directory upstream release tag';Args=@{ReleaseTag='.'};Mode='runtime';Kind='release-tag-reject'},
+        [pscustomobject]@{Name='parent-directory upstream release tag';Args=@{ReleaseTag='..'};Mode='runtime';Kind='release-tag-reject'},
+        [pscustomobject]@{Name='traversal upstream release tag';Args=@{ReleaseTag='..\escape'};Mode='runtime';Kind='release-tag-reject'},
+        [pscustomobject]@{Name='drive-qualified upstream release tag';Args=@{ReleaseTag='C:'};Mode='runtime';Kind='release-tag-reject'},
+        [pscustomobject]@{Name='wildcard upstream release tag';Args=@{ReleaseTag='v*test'};Mode='runtime';Kind='release-tag-reject'},
+        [pscustomobject]@{Name='trailing-dot upstream release tag';Args=@{ReleaseTag='v-test.'};Mode='runtime';Kind='release-tag-reject'},
+        [pscustomobject]@{Name='reserved-device CONIN$ upstream release tag';Args=@{ReleaseTag='conin$'};Mode='runtime';Kind='release-tag-reject'},
+        [pscustomobject]@{Name='reserved-device COM superscript-one upstream release tag';Args=@{ReleaseTag=('COM'+[char]0x00B9)};Mode='runtime';Kind='release-tag-reject'},
+        [pscustomobject]@{Name='parent-directory upstream release tag without runtime removal';Args=@{ReleaseTag='..'};Mode='default';Kind='release-tag-reject'},
+        [pscustomobject]@{Name='non-reserved COM10 upstream release tag';Args=@{ReleaseTag='COM10'};Mode='runtime';Kind='accept'},
         [pscustomobject]@{Name='exact launcher cache';Args=@{IncludeLauncher=$true};Mode='launcher';Kind='accept'},
         [pscustomobject]@{Name='launcher app-directory junction';Args=@{IncludeLauncher=$true;LauncherAppThroughJunction=$true};Mode='launcher';Kind='ancestry-delta'},
         [pscustomobject]@{Name='missing launcher below app-directory junction';Args=@{LauncherAppThroughJunction=$true};Mode='launcher';Kind='ancestry-delta'}
@@ -297,6 +319,11 @@ try {
             'accept' {
                 if($result.ExitCode -eq 0){ Pass "$($case.Name) remains accepted under -WhatIf" }
                 else { Fail "$($case.Name) remains accepted under -WhatIf" (Describe-Result $result) }
+            }
+            'release-tag-reject' {
+                $named = ($result.Output -join ' ') -match 'Refusing cleanup because pinned upstream\.release_tag is missing, non-string'
+                if($result.ExitCode -ne 0 -and $named){ Pass "hardened uninstall rejects $($case.Name) before runtime path construction" }
+                else { Fail "hardened uninstall rejects $($case.Name) before runtime path construction" (Describe-Result $result) }
             }
             'reject' {
                 if($result.ExitCode -ne 0){ Pass "$($case.Name) remains rejected before mutation" }
