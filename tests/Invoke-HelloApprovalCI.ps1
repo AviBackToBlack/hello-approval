@@ -29,6 +29,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$SuiteNamePattern = '\ATest-HelloApproval[A-Za-z0-9]+\.ps1\z'
 $testsRoot = Join-Path $repoRoot 'tests'
 $ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
@@ -71,6 +72,8 @@ if ($engine.Major -ne 5 -or $PSVersionTable.PSEdition -ne 'Desktop') {
 if ($PSCmdlet.ParameterSetName -eq 'Plan') {
     $present = @(Get-ChildItem -LiteralPath $testsRoot -Filter 'Test-HelloApproval*.ps1' -File | ForEach-Object { $_.Name } | Sort-Object)
     $unclassified = @($present | Where-Object { -not $manifest.Contains($_) })
+    # -Suite only accepts this name shape, so reject any other shape at plan time with a clear error.
+    $badNames = @(@($manifest.Keys) + $present | Where-Object { $_ -notmatch $SuiteNamePattern } | Sort-Object -Unique)
     $runnable = @($manifest.Keys | Where-Object { $present -contains $_ })
     $absent = @($manifest.Keys | Where-Object { $present -notcontains $_ })
 
@@ -83,6 +86,10 @@ if ($PSCmdlet.ParameterSetName -eq 'Plan') {
     Write-Summary $summary
     $summary | ForEach-Object { Write-Host $_ }
 
+    if ($badNames.Count -gt 0) {
+        Write-Host ("::error::Suite name(s) not matching {0}: {1}. Rename the harness or widen the pattern in both places." -f $SuiteNamePattern, ($badNames -join ', '))
+        exit 1
+    }
     if ($unclassified.Count -gt 0) {
         Write-Host ("::error::Unclassified test harness(es): {0}. Classify each in tests/Invoke-HelloApprovalCI.ps1." -f ($unclassified -join ', '))
         exit 1
