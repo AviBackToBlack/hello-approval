@@ -775,7 +775,8 @@ try {
             @{ Name = 'missing canonical public key is refused'; Text = $null; Expect = 'Trusted path component is missing' },
             @{ Name = 'non-SK canonical public key is refused'; Text = ($publicKeyText -replace '^sk-ecdsa-sha2-nistp256@openssh.com', 'ssh-ed25519'); Expect = 'Signing public key must be an sk-ecdsa-sha2-nistp256@openssh.com key' },
             @{ Name = 'two-line canonical public key is refused'; Text = ($publicKeyText + "`n" + $publicKeyText); Expect = 'Signing public key must contain exactly one non-empty line' },
-            @{ Name = 'non-base64 canonical public key is refused'; Text = 'sk-ecdsa-sha2-nistp256@openssh.com not*base64 synthetic'; Expect = 'Signing public key blob is not valid base64' }
+            @{ Name = 'non-base64 canonical public key is refused'; Text = 'sk-ecdsa-sha2-nistp256@openssh.com not*base64 synthetic'; Expect = 'Signing public key blob is not valid base64' },
+            @{ Name = 'leading-whitespace canonical public key is refused like the sibling installers'; Text = ('  ' + $publicKeyText); Expect = 'Signing public key must be an sk-ecdsa-sha2-nistp256@openssh.com key' }
         )
         foreach ($keyCase in $keyCases) {
             try {
@@ -789,6 +790,17 @@ try {
             if ($keyResult.ExitCode -ne 0 -and $keyOutput -match [regex]::Escape($keyCase.Expect)) { Pass ('signing label: ' + $keyCase.Name) }
             else { Fail ('signing label: ' + $keyCase.Name) ("rc={0} output={1}" -f $keyResult.ExitCode,$keyOutput) }
         }
+
+        # The installer now depends on USERPROFILE, so it must report its absence clearly, like its siblings.
+        try {
+            [Environment]::SetEnvironmentVariable('USERPROFILE', $null, 'Process')
+            $noProfile = Invoke-InstallerWhatIf -Installer $labelRepo.Installer -LocalAppData $labelLocal -ConfigPath $labelConfig
+        } finally {
+            $env:USERPROFILE = $identity.Profile
+        }
+        $noProfileOutput = $noProfile.Output -join ' | '
+        if ($noProfile.ExitCode -ne 0 -and $noProfileOutput -match 'USERPROFILE is not available') { Pass 'signing label: missing USERPROFILE is reported clearly' }
+        else { Fail 'signing label: missing USERPROFILE is reported clearly' ("rc={0} output={1}" -f $noProfile.ExitCode,$noProfileOutput) }
     }
 
     Write-Host ''

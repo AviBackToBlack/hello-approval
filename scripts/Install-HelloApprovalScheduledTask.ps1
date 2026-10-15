@@ -88,7 +88,7 @@ function Get-CanonicalSigningKeyFingerprint {
     $publicKeyPath = Assert-HelloApprovalTrustedPath -TrustedBase $env:USERPROFILE -Path $publicKeyPath -ExpectedType File
     $keyLines = @(Get-Content -LiteralPath $publicKeyPath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($keyLines.Count -ne 1) { throw "Signing public key must contain exactly one non-empty line: $publicKeyPath" }
-    $keyParts = @(([string]$keyLines[0]).Trim() -split '\s+')
+    $keyParts = @($keyLines[0] -split '\s+')
     if ($keyParts.Count -lt 2 -or $keyParts[0] -cne $ExpectedKeyType) {
         throw "Signing public key must be an $ExpectedKeyType key: $publicKeyPath"
     }
@@ -374,6 +374,9 @@ if ($env:OS -ne 'Windows_NT') {
 }
 if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
     throw 'LOCALAPPDATA is not available.'
+}
+if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+    throw 'USERPROFILE is not available.'
 }
 if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) {
     throw 'SystemRoot is not available.'
