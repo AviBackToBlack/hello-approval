@@ -45,6 +45,26 @@ function Get-EnvironmentValue {
     return [Environment]::GetEnvironmentVariable($Name, [EnvironmentVariableTarget]::$Target)
 }
 
+function Test-PreflightReleaseTag {
+    param(
+        [AllowNull()][object]$Value
+    )
+
+    if ($null -eq $Value -or -not ($Value -is [string])) { return $false }
+    $name = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+    if ($name -ceq '.' -or $name -ceq '..') { return $false }
+    if ($name.Length -gt 255) { return $false }
+    if ($name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) { return $false }
+    if ([IO.Path]::IsPathRooted($name)) { return $false }
+    if ($name.EndsWith('.') -or $name.EndsWith(' ')) { return $false }
+    # Union of reserved DOS device names across supported Windows releases (newer builds
+    # reserve fewer names in full paths), including superscript COM/LPT digits, console
+    # pseudo-devices, and the legacy "NAME .ext" form whose base trims trailing spaces.
+    if ($name -match '^(?i:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|CLOCK\$|(?:COM|LPT)[0-9\u00B9\u00B2\u00B3]) *(?:\..*)?$') { return $false }
+    return $true
+}
+
 function Get-GitScopedValue {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('global', 'system')][string]$Scope,
@@ -107,7 +127,12 @@ try {
         throw 'Pinned provenance JSON is missing.'
     }
 
-    $pin = Get-Content -LiteralPath $pinPath -Raw | ConvertFrom-Json
+    try {
+        $pin = Get-Content -LiteralPath $pinPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.parse' -Message 'Pinned provenance JSON could not be read and parsed.' -Value $_.Exception.Message
+        throw 'Pinned provenance JSON parsing failed.'
+    }
     try {
         [void](Assert-HelloApprovalPinPolicy -Pin $pin)
         Add-Finding -Severity 'PASS' -Check 'pin.schema' -Message 'Provenance pin schema is supported.' -Value $pin.schema
@@ -118,15 +143,35 @@ try {
         throw 'Provenance pin policy validation failed.'
     }
 
-    if ($pin.installation_policy.allowed_distribution -ne 'zip-manual-placement') {
-        Add-Finding -Severity 'BLOCK' -Check 'pin.policy.distribution' -Message 'Pin distribution policy is incompatible with the HA-1.1 installer.' -Value $pin.installation_policy.allowed_distribution
+    $installationPolicyProperty = $pin.PSObject.Properties['installation_policy']
+    $distributionProperty = if ($null -eq $installationPolicyProperty -or $null -eq $installationPolicyProperty.Value) { $null } else { $installationPolicyProperty.Value.PSObject.Properties['allowed_distribution'] }
+    $allowedDistribution = if ($null -eq $distributionProperty) { $null } else { [string]$distributionProperty.Value }
+    if ([string]::IsNullOrWhiteSpace($allowedDistribution)) {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.policy.distribution' -Message 'Pin distribution policy is missing or empty.' -Value $allowedDistribution
+    } elseif ($allowedDistribution -cne 'zip-manual-placement') {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.policy.distribution' -Message 'Pin distribution policy is incompatible with the HA-1.1 installer.' -Value $allowedDistribution
     } else {
-        Add-Finding -Severity 'PASS' -Check 'pin.policy.distribution' -Message 'Pin distribution policy matches the inert ZIP installer.' -Value $pin.installation_policy.allowed_distribution
+        Add-Finding -Severity 'PASS' -Check 'pin.policy.distribution' -Message 'Pin distribution policy matches the inert ZIP installer.' -Value $allowedDistribution
     }
 
-    $releaseTag = [string]$pin.upstream.release_tag
+    $upstreamProperty = $pin.PSObject.Properties['upstream']
+    $releaseTagProperty = if ($null -eq $upstreamProperty -or $null -eq $upstreamProperty.Value) { $null } else { $upstreamProperty.Value.PSObject.Properties['release_tag'] }
+    $releaseTagValue = if ($null -eq $releaseTagProperty) { $null } else { $releaseTagProperty.Value }
+    $releaseTag = if ($releaseTagValue -is [string]) { [string]$releaseTagValue } else { $null }
+    if (-not (Test-PreflightReleaseTag -Value $releaseTagValue)) {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.upstream.release-tag' -Message 'Pin upstream.release_tag is missing, non-string, or not a usable Windows runtime path segment.' -Value $releaseTagValue
+        throw 'Pinned upstream release tag is unusable.'
+    }
     $runtimeRoot = Join-Path $env:LOCALAPPDATA ("hello-approval\runtime\sshenc\{0}" -f $releaseTag)
     $runtimeBin = Join-Path $runtimeRoot 'bin'
+    # Runtime consumers (Git gpg.ssh.program, Scheduled Task actions) are not guaranteed to be
+    # long-path aware, so every pinned runtime file path must fit in MAX_PATH (259 chars + NUL).
+    $longestRuntimeFilePath = (@($pin.installation_policy.installed_files) | ForEach-Object { (Join-Path $runtimeBin ([string]$_)).Length } | Measure-Object -Maximum).Maximum
+    if ($longestRuntimeFilePath -gt 259) {
+        Add-Finding -Severity 'BLOCK' -Check 'pin.upstream.release-tag' -Message 'Pin upstream.release_tag makes pinned runtime file paths exceed the Windows MAX_PATH limit.' -Value $runtimeRoot
+        throw 'Pinned upstream release tag is unusable.'
+    }
+    Add-Finding -Severity 'PASS' -Check 'pin.upstream.release-tag' -Message 'Pin upstream release tag is usable as a runtime path segment.' -Value $releaseTag
     $expectedPipe = '\\.\pipe\sshenc-github-signing'
     $expectedPipeName = 'sshenc-github-signing'
     $configCandidates = @(
