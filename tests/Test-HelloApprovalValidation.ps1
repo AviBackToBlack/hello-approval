@@ -240,13 +240,24 @@ try {
         Expected='is missing sha256'
     }
 
-    foreach ($bad in @('', '   ', '.', '..', 'dir/name.exe', 'dir\name.exe')) {
+    # Pinned names must be usable single Windows file-name components (#39): beyond blank,
+    # traversal and separators, reject invalid characters (including wildcards, ':' and
+    # control characters), trailing dot/space, reserved device names and >255-char names.
+    $invalidLeafNames = @(
+        '', '   ', '.', '..', 'dir/name.exe', 'dir\name.exe',
+        'a|b', 'x:y', 'C:name.exe', 'a*b.exe', 'a?b.exe', 'a<b', 'a>b', 'a"b', ("a{0}b" -f [char]9),
+        'name.exe.', 'name.exe ', 'CON', 'con.exe', 'NUL.txt', 'NUL .txt', 'aux', 'CONIN$', 'CONOUT$.log',
+        'CLOCK$', 'COM1', 'lpt9.exe', 'COM0', ('COM' + [char]0x00B9), ('LPT' + [char]0x00B3),
+        ('n' * 256)
+    )
+
+    foreach ($bad in $invalidLeafNames) {
         $p = Copy-Object $fixture.Pin
         $p.files[0].name=$bad
         $pinCases += [pscustomobject]@{
             Name="pin invalid file leaf [$bad]"
             Pin=$p
-            Expected='Provenance file records contains an invalid non-leaf name'
+            Expected='Provenance file records contains a name that is not a usable Windows file-name component'
         }
     }
 
@@ -268,13 +279,13 @@ try {
         Expected='Provenance file records contains duplicate/case-colliding Windows name'
     }
 
-    foreach ($bad in @('', '   ', '.', '..', 'dir/name.exe', 'dir\name.exe')) {
+    foreach ($bad in $invalidLeafNames) {
         $p = Copy-Object $fixture.Pin
         $p.installation_policy.installed_files[0]=$bad
         $pinCases += [pscustomobject]@{
             Name="pin invalid installed leaf [$bad]"
             Pin=$p
-            Expected='installation_policy.installed_files contains an invalid non-leaf name'
+            Expected='installation_policy.installed_files contains a name that is not a usable Windows file-name component'
         }
     }
 
@@ -362,6 +373,91 @@ try {
         Invoke-ThrowCase -Name $case.Name -ExpectedMessagePattern $case.Expected -Body {
             [void](Assert-HelloApprovalPinPolicy -Pin $case.Pin)
         }
+    }
+
+    # Non-reserved look-alikes stay valid pinned names.
+    foreach ($good in @('COM10', 'CONSOLE.exe', 'NULL.exe', 'lpt.exe', ('COM' + [char]0x2074), ('n' * 255))) {
+        Invoke-PassCase "pin accepts valid leaf [$good]" {
+            $p = Copy-Object $fixture.Pin
+            $p.files[0].name = $good
+            $p.installation_policy.installed_files[0] = $good
+            [void](Assert-HelloApprovalPinPolicy -Pin $p)
+        }
+    }
+
+    Invoke-PassCase 'module exports exactly the narrow public surface' {
+        $expected = @('Assert-HelloApprovalPinPolicy', 'Assert-HelloApprovalPinnedRuntime', 'Assert-HelloApprovalTrustedPath', 'Get-HelloApprovalFileSha256', 'Test-HelloApprovalReleaseTag')
+        $actual = @((Get-Module HelloApproval.Validation).ExportedFunctions.Keys | Sort-Object)
+        if (($actual -join ',') -cne (($expected | Sort-Object) -join ',')) {
+            throw ('exports: ' + ($actual -join ','))
+        }
+    }
+
+    # One authoritative Windows file-name component predicate, exposed narrowly for upstream.release_tag.
+    $releaseTagRejects = @(
+        @{ Name = 'null'; Value = $null },
+        @{ Name = 'integer'; Value = 101 },
+        @{ Name = 'array'; Value = @('v0.6.101') },
+        @{ Name = 'empty'; Value = '' },
+        @{ Name = 'blank'; Value = '   ' },
+        @{ Name = 'dot'; Value = '.' },
+        @{ Name = 'dot-dot'; Value = '..' },
+        @{ Name = 'slash'; Value = 'v0/6' },
+        @{ Name = 'backslash'; Value = 'v0\6' },
+        @{ Name = 'traversal'; Value = '..\v0' },
+        @{ Name = 'drive-qualified'; Value = 'C:v0' },
+        @{ Name = 'rooted'; Value = '\v0' },
+        @{ Name = 'pipe'; Value = 'a|b' },
+        @{ Name = 'star'; Value = 'v*' },
+        @{ Name = 'question'; Value = 'v?' },
+        @{ Name = 'control'; Value = ("v{0}0" -f [char]1) },
+        @{ Name = 'trailing dot'; Value = 'v0.' },
+        @{ Name = 'trailing space'; Value = 'v0 ' },
+        @{ Name = 'CON'; Value = 'CON' },
+        @{ Name = 'prn lower'; Value = 'prn' },
+        @{ Name = 'NUL extension'; Value = 'NUL.tar.gz' },
+        @{ Name = 'NUL space extension'; Value = 'NUL .txt' },
+        @{ Name = 'CONIN$'; Value = 'CONIN$' },
+        @{ Name = 'conout$ extension'; Value = 'conout$.log' },
+        @{ Name = 'CLOCK$'; Value = 'CLOCK$' },
+        @{ Name = 'COM0'; Value = 'COM0' },
+        @{ Name = 'lpt0'; Value = 'lpt0' },
+        @{ Name = 'COM superscript one'; Value = ('COM' + [char]0x00B9) },
+        @{ Name = 'LPT superscript two'; Value = ('LPT' + [char]0x00B2) },
+        @{ Name = 'LPT superscript three'; Value = ('LPT' + [char]0x00B3) },
+        @{ Name = '256 chars'; Value = ('v' * 256) }
+    )
+    foreach ($case in $releaseTagRejects) {
+        Invoke-PassCase "release tag rejects [$($case.Name)]" {
+            $result = Test-HelloApprovalReleaseTag -Value $case.Value
+            if (-not ($result -is [bool]) -or $result) { throw "returned '$result'" }
+        }
+    }
+    foreach ($good in @('v0.6.101', 'COM10', 'CONSOLE', 'NULL', ('COM' + [char]0x2074), ('v' * 255))) {
+        Invoke-PassCase "release tag accepts [$good]" {
+            $result = Test-HelloApprovalReleaseTag -Value $good
+            if (-not ($result -is [bool]) -or -not $result) { throw "returned '$result'" }
+        }
+    }
+
+    Invoke-PassCase 'release tag predicate has no mandatory parameters and never throws' {
+        if ((Test-HelloApprovalReleaseTag) -ne $false) { throw 'omitted value accepted' }
+        if ((Test-HelloApprovalReleaseTag -Value ([pscustomobject]@{ x = 1 })) -ne $false) { throw 'object accepted' }
+    }
+
+    # Shared pin policy deliberately does not own upstream.release_tag (callers classify it).
+    Invoke-PassCase 'pin policy boundary leaves upstream.release_tag to callers' {
+        $p = Copy-Object $fixture.Pin
+        $p | Add-Member -NotePropertyName upstream -NotePropertyValue ([pscustomobject]@{ release_tag = 'a|b' })
+        [void](Assert-HelloApprovalPinPolicy -Pin $p)
+    }
+
+    # Callers must consume the shared predicate instead of carrying private copies.
+    Invoke-PassCase 'no caller-owned file-name component predicate copies remain' {
+        $copies = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'scripts') -Filter '*.ps1' -File |
+            Select-String -Pattern 'GetInvalidFileNameChars|function Test-\w*ReleaseTag\b' |
+            ForEach-Object { '{0}:{1}' -f $_.Filename, $_.LineNumber })
+        if ($copies.Count -ne 0) { throw ('copies: ' + ($copies -join ', ')) }
     }
 
     Invoke-ThrowCase -Name 'runtime missing root' -ExpectedMessagePattern 'Trusted path component is missing' -Body {

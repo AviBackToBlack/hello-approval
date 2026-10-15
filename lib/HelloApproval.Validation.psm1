@@ -34,6 +34,28 @@ function Get-HelloApprovalFileSha256 {
     }
 }
 
+function Test-HelloApprovalWindowsFileNameComponent {
+    # The one authoritative "usable single Windows path component" predicate. Never throws.
+    param(
+        [AllowNull()][object]$Value
+    )
+
+    if ($null -eq $Value -or -not ($Value -is [string])) { return $false }
+    $name = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+    if ($name -ceq '.' -or $name -ceq '..') { return $false }
+    if ($name.Length -gt 255) { return $false }
+    # Invalid file-name characters include both separators, ':', wildcards and control characters.
+    if ($name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) { return $false }
+    if ([IO.Path]::IsPathRooted($name)) { return $false }
+    if ($name.EndsWith('.') -or $name.EndsWith(' ')) { return $false }
+    # Union of reserved DOS device names across supported Windows releases (newer builds
+    # reserve fewer names in full paths), including superscript COM/LPT digits, console
+    # pseudo-devices, and the legacy "NAME .ext" form whose base trims trailing spaces.
+    if ($name -match '^(?i:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|CLOCK\$|(?:COM|LPT)[0-9\u00B9\u00B2\u00B3]) *(?:\..*)?$') { return $false }
+    return $true
+}
+
 function Test-HelloApprovalLeafName {
     param(
         [Parameter(Mandatory = $true)]
@@ -41,11 +63,19 @@ function Test-HelloApprovalLeafName {
         [string]$Name
     )
 
-    if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
-    if ($Name -ceq '.' -or $Name -ceq '..') { return $false }
-    if ($Name.IndexOf([IO.Path]::DirectorySeparatorChar) -ge 0) { return $false }
-    if ($Name.IndexOf([IO.Path]::AltDirectorySeparatorChar) -ge 0) { return $false }
-    return $true
+    return (Test-HelloApprovalWindowsFileNameComponent -Value $Name)
+}
+
+function Test-HelloApprovalReleaseTag {
+    # Narrow public surface for the caller-owned upstream.release_tag gate. Callers keep their own
+    # failure classification and any context-dependent (MAX_PATH, staging, cleanup) path rules.
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [AllowNull()][object]$Value
+    )
+
+    return (Test-HelloApprovalWindowsFileNameComponent -Value $Value)
 }
 
 function Test-HelloApprovalNonNegativeInteger {
@@ -81,7 +111,7 @@ function Assert-HelloApprovalUniqueWindowsNames {
         }
         $name = [string]$raw
         if (-not (Test-HelloApprovalLeafName -Name $name)) {
-            throw "$Purpose contains an invalid non-leaf name: '$name'"
+            throw "$Purpose contains a name that is not a usable Windows file-name component: '$name'"
         }
         if (-not $seen.Add($name)) {
             throw "$Purpose contains duplicate/case-colliding Windows name: '$name'"
@@ -397,5 +427,6 @@ Export-ModuleMember -Function @(
     'Assert-HelloApprovalPinPolicy',
     'Assert-HelloApprovalTrustedPath',
     'Get-HelloApprovalFileSha256',
-    'Assert-HelloApprovalPinnedRuntime'
+    'Assert-HelloApprovalPinnedRuntime',
+    'Test-HelloApprovalReleaseTag'
 )

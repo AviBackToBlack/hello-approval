@@ -85,7 +85,10 @@ function New-Fixture {
         [switch]$NonStringReleaseTag,
         [switch]$PinMissing,
         [switch]$NonObjectUpstream,
-        [AllowNull()][string]$ReleaseTag
+        [switch]$PreviousGenerationLauncher,
+        [switch]$OmitCurrentLauncher,
+        [AllowNull()][string]$ReleaseTag,
+        [AllowNull()][string]$PinnedAgentName
     )
 
     $tool = Join-Path $Root 'tool'
@@ -164,10 +167,31 @@ function New-Fixture {
         } else {
             $launcherBase = Join-Path $appRoot 'launcher'
         }
-        $launcherVersionRoot = Join-Path $launcherBase $launcherHash
-        [void][IO.Directory]::CreateDirectory($launcherVersionRoot)
-        Copy-Item -LiteralPath $sourceLauncher -Destination (Join-Path $launcherVersionRoot 'Start-HelloApprovalAgent.ps1') -Force
-        Copy-Item -LiteralPath $sourceValidationModule -Destination (Join-Path $launcherVersionRoot 'HelloApproval.Validation.psm1') -Force
+        if(-not $OmitCurrentLauncher){
+            $launcherVersionRoot = Join-Path $launcherBase $launcherHash
+            [void][IO.Directory]::CreateDirectory($launcherVersionRoot)
+            Copy-Item -LiteralPath $sourceLauncher -Destination (Join-Path $launcherVersionRoot 'Start-HelloApprovalAgent.ps1') -Force
+            Copy-Item -LiteralPath $sourceValidationModule -Destination (Join-Path $launcherVersionRoot 'HelloApproval.Validation.psm1') -Force
+        }
+        if($PreviousGenerationLauncher){
+            # An earlier bundle generation installed by a previous commit: different module bytes and a
+            # launcher whose single validation-module pin names them, in its own digest directory.
+            $utf8 = [Text.UTF8Encoding]::new($false)
+            $previousModuleText = [IO.File]::ReadAllText($sourceValidationModule) + "# previous-generation bundle test fixture`n"
+            $previousModuleHash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($utf8.GetBytes($previousModuleText)))).Replace('-','').ToLowerInvariant()
+            $pinPattern = "(?m)^\`$ValidationModuleSha256 = '[a-f0-9]{64}'$"
+            $launcherText = [IO.File]::ReadAllText($sourceLauncher)
+            if([regex]::Matches($launcherText,$pinPattern).Count -ne 1){ throw 'Launcher must contain exactly one validation-module pin.' }
+            $previousLauncherText = [regex]::Replace($launcherText,$pinPattern,("`$ValidationModuleSha256 = '{0}'" -f $previousModuleHash))
+            $previousStage = Join-Path $Root 'previous-generation'
+            [void][IO.Directory]::CreateDirectory($previousStage)
+            [IO.File]::WriteAllText((Join-Path $previousStage 'Start-HelloApprovalAgent.ps1'),$previousLauncherText,$utf8)
+            [IO.File]::WriteAllText((Join-Path $previousStage 'HelloApproval.Validation.psm1'),$previousModuleText,$utf8)
+            $previousRoot = Join-Path $launcherBase (Get-FileSha256Local (Join-Path $previousStage 'Start-HelloApprovalAgent.ps1'))
+            [void][IO.Directory]::CreateDirectory($previousRoot)
+            Copy-Item -LiteralPath (Join-Path $previousStage 'Start-HelloApprovalAgent.ps1') -Destination $previousRoot
+            Copy-Item -LiteralPath (Join-Path $previousStage 'HelloApproval.Validation.psm1') -Destination $previousRoot
+        }
     }
 
     $runtimeBase = Join-Path (Join-Path $physicalProject 'runtime') 'sshenc'
@@ -222,6 +246,10 @@ function New-Fixture {
     if($NonStringReleaseTag){$pin.upstream.release_tag=$true}
     if($NonObjectUpstream){$pin.upstream='v-test'}
     if($PSBoundParameters.ContainsKey('ReleaseTag')){$pin.upstream.release_tag=$ReleaseTag}
+    if($PSBoundParameters.ContainsKey('PinnedAgentName')){
+        $pin.files[1].name=$PinnedAgentName
+        $pin.installation_policy.installed_files=@('sshenc.exe',$PinnedAgentName)
+    }
     $pinText=if($MalformedPinJson){'{ this is not valid json'}elseif($NullPinJson){'null'}else{$pin|ConvertTo-Json -Depth 20}
     # Keep the pin ASCII so non-ASCII fixture tags survive the reader's default PS5.1 encoding.
     $pinText=[regex]::Replace($pinText,'[^\x00-\x7F]',{param($m) '\u{0:X4}' -f [int][char]$m.Value})
@@ -330,8 +358,13 @@ try {
         [pscustomobject]@{Name='hello-approval project-root junction';Args=@{ProjectRootThroughJunction=$true};Kind='project-junction'},
         [pscustomobject]@{Name='project Git directory junction';Args=@{GitRootThroughJunction=$true};Kind='git-junction'},
         [pscustomobject]@{Name='launcher app directory junction';Args=@{LauncherAppThroughJunction=$true};Kind='launcher-junction'},
+        [pscustomobject]@{Name='existing install with only the previous bundle generation';Args=@{PreviousGenerationLauncher=$true;OmitCurrentLauncher=$true};Kind='launcher-upgrade-required'},
+        [pscustomobject]@{Name='upgraded install retaining the previous bundle generation';Args=@{PreviousGenerationLauncher=$true};Kind='launcher-retained-previous'},
         [pscustomobject]@{Name='signing public key through .ssh junction';Args=@{PublicKeyThroughJunction=$true};Kind='public-key-junction'},
         [pscustomobject]@{Name='malformed unused pin leaf name';Args=@{MalformedUnusedName=$true};Kind='pin-delta'},
+        [pscustomobject]@{Name='Windows-invalid required pinned file name';Args=@{PinnedAgentName='a|b'};Kind='policy-validation-block'},
+        [pscustomobject]@{Name='reserved-device required pinned file name';Args=@{PinnedAgentName='CON.exe'};Kind='policy-validation-block'},
+        [pscustomobject]@{Name='overlong required pinned file name';Args=@{PinnedAgentName=('n'*256)};Kind='policy-validation-block'},
         [pscustomobject]@{Name='malformed provenance JSON';Args=@{MalformedPinJson=$true};Kind='provenance-block';Check='pin.parse'},
         [pscustomobject]@{Name='missing provenance pin';Args=@{PinMissing=$true};Kind='provenance-block';Check='pin.present'},
         [pscustomobject]@{Name='non-object upstream';Args=@{NonObjectUpstream=$true};Kind='provenance-block';Check='pin.upstream.release-tag'},
@@ -477,6 +510,39 @@ try {
                     } else {
                         Fail 'hardened Doctor rejects project Git directory junction at every direct consumer' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
                     }
+                }
+            }
+            'policy-validation-block' {
+                $policyBlocks = @($result.Json.findings | Where-Object { $_.severity -eq 'BLOCK' -and $_.check -eq 'pin.policy.validation' })
+                if($ExpectedPhase1){
+                    Write-Host ('SKIP  {0}: shared file-name validation is a Phase 2 contract' -f $case.Name)
+                } elseif($result.ExitCode -eq 2 -and $policyBlocks.Count -eq 1){
+                    Pass ('hardened Doctor classifies {0} as structured pin.policy.validation BLOCK' -f $case.Name)
+                } else {
+                    Fail ('hardened Doctor classifies {0} as structured pin.policy.validation BLOCK' -f $case.Name) ('rc={0} findings={1}' -f $result.ExitCode,(($result.Json.findings | Where-Object { $_.severity -eq 'BLOCK' } | ConvertTo-Json -Depth 8) -join ''))
+                }
+            }
+            'launcher-upgrade-required' {
+                if($ExpectedPhase1){
+                    Write-Host ('SKIP  {0}: content-addressed bundle generations are a Phase 2 contract' -f $case.Name)
+                    continue
+                }
+                $missing = @($result.Json.findings | Where-Object { $_.severity -eq 'BLOCK' -and $_.check -eq 'launcher.cache' -and [string]$_.message -match 'bundle directory is missing' })
+                if($result.ExitCode -eq 2 -and $missing.Count -eq 1 -and -not (Has-Finding $result 'PASS' 'launcher.cache')){
+                    Pass 'Doctor reports a previous-generation-only install as launcher.cache upgrade-required BLOCK'
+                } else {
+                    Fail 'Doctor reports a previous-generation-only install as launcher.cache upgrade-required BLOCK' (($result.Json.findings | Where-Object { $_.check -like 'launcher.*' } | ConvertTo-Json -Depth 8) -join '')
+                }
+            }
+            'launcher-retained-previous' {
+                if($ExpectedPhase1){
+                    Write-Host ('SKIP  {0}: content-addressed bundle generations are a Phase 2 contract' -f $case.Name)
+                    continue
+                }
+                if(Has-Finding $result 'PASS' 'launcher.cache'){
+                    Pass 'Doctor accepts the current bundle while a previous generation is retained for rollback'
+                } else {
+                    Fail 'Doctor accepts the current bundle while a previous generation is retained for rollback' (($result.Json.findings | Where-Object { $_.check -like 'launcher.*' } | ConvertTo-Json -Depth 8) -join '')
                 }
             }
             'launcher-junction' {

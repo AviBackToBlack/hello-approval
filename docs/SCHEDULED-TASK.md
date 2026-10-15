@@ -114,6 +114,23 @@ If an owned task needs an update:
 
 No foreign task is overwritten.
 
+### Upgrading after a launcher or validation-module change
+
+Any change to `scripts/Start-HelloApprovalAgent.ps1` or `lib/HelloApproval.Validation.psm1` produces a new launcher digest and therefore a new `app\launcher\<launcher-sha256>\` directory. Nothing is upgraded automatically:
+
+- The installed task keeps pointing at its existing digest directory. That launcher still verifies its own sibling module, so the running agent is unaffected by updating the checkout.
+- After the checkout is updated, Doctor reports `launcher.cache` BLOCK "Installed content-addressed launcher bundle directory is missing" (and, through it, `task.definition`). This is the upgrade-required signal, not an internal error.
+
+Operator upgrade, from the updated checkout:
+
+1. `.\scripts\Test-HelloApprovalDoctor.ps1` and confirm the only new BLOCKs are the `launcher.cache` "directory is missing" finding and its dependent `task.definition`.
+2. `.\scripts\Install-HelloApprovalScheduledTask.ps1 -WhatIf` to preview, then `.\scripts\Install-HelloApprovalScheduledTask.ps1`. The installer stages and verifies the new digest directory, then performs the update flow above (export, stop, re-register, verify, restore the previous XML on failure).
+3. `.\scripts\Test-HelloApprovalDoctor.ps1` and confirm `launcher.cache` and `task.definition` PASS.
+
+Previous digest directories are retained. The installer never removes them, and `Uninstall-HelloApproval.ps1` preserves the whole launcher cache by default. Only an explicit `-RemoveLauncherCache` removes it: after verifying every generation, it removes all of them, including the rollback target.
+
+Rollback: check out the previous commit and re-run `Install-HelloApprovalScheduledTask.ps1`. The installer verifies the retained directory byte-exact (launcher hash equals the directory name, module hash equals the launcher's pin), does not restage it, and re-points the task at it. A tampered retained directory is refused before registration. Return to the newer commit and re-run the installer to roll forward.
+
 ## Conservative uninstall
 
 `Uninstall-HelloApprovalScheduledTask.ps1`:

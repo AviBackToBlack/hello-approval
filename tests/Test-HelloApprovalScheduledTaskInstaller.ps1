@@ -262,10 +262,11 @@ function Invoke-InstallerToRegistrationBoundary {
 
         $sentinel = 'HELLO_APPROVAL_TEST_REGISTRATION_BOUNDARY'
         $caught = $null
+        $capture = @{ WorkingDirectory = $null; Arguments = $null }
 
         try {
             & {
-                param($InstallerPath,$SentinelText)
+                param($InstallerPath,$SentinelText,$Capture)
 
                 function Register-ScheduledTask {
                     [CmdletBinding()]
@@ -279,6 +280,8 @@ function Invoke-InstallerToRegistrationBoundary {
                         [string]$Description,
                         [switch]$Force
                     )
+                    $Capture.WorkingDirectory = [string]$Action.WorkingDirectory
+                    $Capture.Arguments = [string]$Action.Arguments
                     throw $SentinelText
                 }
 
@@ -292,7 +295,7 @@ function Invoke-InstallerToRegistrationBoundary {
                 }
 
                 & $InstallerPath
-            } $Installer $sentinel
+            } $Installer $sentinel $capture
         } catch {
             $caught = [string]$_.Exception.Message
         }
@@ -300,6 +303,8 @@ function Invoke-InstallerToRegistrationBoundary {
         return [pscustomobject]@{
             Sentinel = $sentinel
             ExceptionMessage = $caught
+            WorkingDirectory = $capture.WorkingDirectory
+            Arguments = $capture.Arguments
         }
     } finally {
         $env:LOCALAPPDATA = $oldLocal
@@ -367,6 +372,73 @@ function Assert-ReleaseTagCase($TagCase, $Result, [bool]$Mutated, [string]$Gate)
         else { Fail $label ("rc={0} mutated={1} output={2}" -f $Result.ExitCode, $Mutated, ($Result.Output -join ' | ')) }
     }
 }
+function New-PreviousGenerationBundle {
+    # A self-consistent earlier bundle generation: different module bytes, and a launcher whose single
+    # validation-module pin names them. It gets its own content-addressed digest directory, like any
+    # bundle installed by an earlier commit.
+    param([string]$Root)
+
+    [void][IO.Directory]::CreateDirectory($Root)
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    $module = Join-Path $Root 'HelloApproval.Validation.psm1'
+    [IO.File]::WriteAllText($module, ([IO.File]::ReadAllText($sourceModule) + "# previous-generation bundle test fixture`n"), $utf8)
+    $moduleHash = Get-FileSha256Local -Path $module
+
+    $pinPattern = "(?m)^\`$ValidationModuleSha256 = '[a-f0-9]{64}'$"
+    $launcherText = [IO.File]::ReadAllText($sourceLauncher)
+    if ([regex]::Matches($launcherText, $pinPattern).Count -ne 1) { throw 'Launcher must contain exactly one validation-module pin.' }
+    $launcher = Join-Path $Root 'Start-HelloApprovalAgent.ps1'
+    [IO.File]::WriteAllText($launcher, [regex]::Replace($launcherText, $pinPattern, ("`$ValidationModuleSha256 = '{0}'" -f $moduleHash)), $utf8)
+
+    return [pscustomobject]@{
+        Launcher = $launcher
+        Module = $module
+        LauncherHash = Get-FileSha256Local -Path $launcher
+        ModuleHash = $moduleHash
+    }
+}
+
+function Install-BundleDirectory {
+    param([string]$LauncherRoot, $Bundle)
+
+    $dir = Join-Path $LauncherRoot $Bundle.LauncherHash
+    [void][IO.Directory]::CreateDirectory($dir)
+    Copy-Item -LiteralPath $Bundle.Launcher -Destination (Join-Path $dir 'Start-HelloApprovalAgent.ps1')
+    Copy-Item -LiteralPath $Bundle.Module -Destination (Join-Path $dir 'HelloApproval.Validation.psm1')
+    return $dir
+}
+
+function Test-BundleDirectoryExact {
+    param([string]$Dir, [string]$LauncherHash, [string]$ModuleHash)
+
+    if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return $false }
+    $items = @(Get-ChildItem -LiteralPath $Dir -Force)
+    $names = @($items | ForEach-Object { $_.Name })
+    return (
+        $items.Count -eq 2 -and
+        ($names -ccontains 'Start-HelloApprovalAgent.ps1') -and
+        ($names -ccontains 'HelloApproval.Validation.psm1') -and
+        (Split-Path -Leaf $Dir) -ceq $LauncherHash -and
+        (Get-FileSha256Local -Path (Join-Path $Dir 'Start-HelloApprovalAgent.ps1')) -ceq $LauncherHash -and
+        (Get-FileSha256Local -Path (Join-Path $Dir 'HelloApproval.Validation.psm1')) -ceq $ModuleHash
+    )
+}
+
+# Restaging creates fresh directories/files, so a sentinel creation time proves a bundle was left in place.
+$bundleSentinelTime = [DateTime]::new(2001, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+
+function Set-BundleSentinelTime {
+    param([string]$Dir)
+    foreach ($item in @(Get-ChildItem -LiteralPath $Dir -Force)) { $item.CreationTimeUtc = $bundleSentinelTime }
+    (Get-Item -LiteralPath $Dir -Force).CreationTimeUtc = $bundleSentinelTime
+}
+
+function Test-BundleSentinelTime {
+    param([string]$Dir)
+    $items = @(Get-Item -LiteralPath $Dir -Force) + @(Get-ChildItem -LiteralPath $Dir -Force)
+    return (@($items | Where-Object { $_.CreationTimeUtc -ne $bundleSentinelTime }).Count -eq 0)
+}
+
 $root = Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-task-installer-' + [Guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($root)
 
@@ -518,6 +590,71 @@ try {
             Assert-ReleaseTagCase $tagCase $tagResult $tagMutated 'runtime path construction'
         }
     }
+    if (-not $ExpectedPhase1) {
+        # Existing-install upgrade: an earlier bundle generation is installed; the current repository
+        # stages its own digest directory, re-points the task there, and leaves the old one untouched.
+        $migrationRoot = Join-Path $root 'migration'
+        [void][IO.Directory]::CreateDirectory($migrationRoot)
+        $migrationRepo = New-SyntheticRepo -Root $migrationRoot
+        $migrationLocal = Join-Path $migrationRoot 'local'
+        $migrationConfig = Join-Path $migrationRoot 'config\config.toml'
+        [void](New-SyntheticRuntime -LocalAppData $migrationLocal -PinPath $migrationRepo.PinPath -ConfigPath $migrationConfig)
+        $migrationLauncherRoot = Join-Path (Join-Path (Join-Path $migrationLocal 'hello-approval') 'app') 'launcher'
+        [void][IO.Directory]::CreateDirectory($migrationLauncherRoot)
+        $previous = New-PreviousGenerationBundle -Root (Join-Path $migrationRoot 'previous-generation')
+        $previousDir = Install-BundleDirectory -LauncherRoot $migrationLauncherRoot -Bundle $previous
+        Set-BundleSentinelTime -Dir $previousDir
+        $currentHash = Get-FileSha256Local -Path $sourceLauncher
+        $currentModuleHash = Get-FileSha256Local -Path $sourceModule
+        $currentDir = Join-Path $migrationLauncherRoot $currentHash
+
+        $upgrade = Invoke-InstallerToRegistrationBoundary -Installer $migrationRepo.Installer -LocalAppData $migrationLocal -ConfigPath $migrationConfig
+        $staging = @(Get-ChildItem -LiteralPath $migrationLauncherRoot -Force | Where-Object { $_.Name -like '.staging.*' })
+        if ($previous.LauncherHash -cne $currentHash -and
+            $upgrade.ExceptionMessage -ceq $upgrade.Sentinel -and
+            $upgrade.WorkingDirectory -ceq $currentDir -and
+            (Test-BundleDirectoryExact -Dir $currentDir -LauncherHash $currentHash -ModuleHash $currentModuleHash) -and
+            (Test-BundleDirectoryExact -Dir $previousDir -LauncherHash $previous.LauncherHash -ModuleHash $previous.ModuleHash) -and
+            (Test-BundleSentinelTime -Dir $previousDir) -and
+            $staging.Count -eq 0) {
+            Pass 'existing-install upgrade stages the new digest directory and retains the previous bundle byte-exact'
+        } else {
+            Fail 'existing-install upgrade stages the new digest directory and retains the previous bundle byte-exact' ("exception={0} workdir={1} staging={2}" -f $upgrade.ExceptionMessage,$upgrade.WorkingDirectory,$staging.Count)
+        }
+
+        # Rollback: the previous commit's launcher and module re-point the task at the retained bundle,
+        # which must verify byte-exact in place without restaging or touching the newer bundle.
+        if (Test-Path -LiteralPath $currentDir -PathType Container) { Set-BundleSentinelTime -Dir $currentDir }
+        $rollbackRepo = New-SyntheticRepo -Root (Join-Path $migrationRoot 'rollback')
+        Copy-Item -LiteralPath $previous.Launcher -Destination (Join-Path (Join-Path $rollbackRepo.Repo 'scripts') 'Start-HelloApprovalAgent.ps1') -Force
+        Copy-Item -LiteralPath $previous.Module -Destination (Join-Path (Join-Path $rollbackRepo.Repo 'lib') 'HelloApproval.Validation.psm1') -Force
+        Copy-Item -LiteralPath $migrationRepo.PinPath -Destination $rollbackRepo.PinPath -Force
+        $rollback = Invoke-InstallerToRegistrationBoundary -Installer $rollbackRepo.Installer -LocalAppData $migrationLocal -ConfigPath $migrationConfig
+        $staging = @(Get-ChildItem -LiteralPath $migrationLauncherRoot -Force | Where-Object { $_.Name -like '.staging.*' })
+        $digestDirs = @(Get-ChildItem -LiteralPath $migrationLauncherRoot -Force -Directory)
+        if ($rollback.ExceptionMessage -ceq $rollback.Sentinel -and
+            $rollback.WorkingDirectory -ceq $previousDir -and
+            (Test-BundleDirectoryExact -Dir $previousDir -LauncherHash $previous.LauncherHash -ModuleHash $previous.ModuleHash) -and
+            (Test-BundleDirectoryExact -Dir $currentDir -LauncherHash $currentHash -ModuleHash $currentModuleHash) -and
+            (Test-BundleSentinelTime -Dir $previousDir) -and
+            (Test-BundleSentinelTime -Dir $currentDir) -and
+            $digestDirs.Count -eq 2 -and
+            $staging.Count -eq 0) {
+            Pass 'rollback re-points at the retained previous bundle after byte-exact verification'
+        } else {
+            Fail 'rollback re-points at the retained previous bundle after byte-exact verification' ("exception={0} workdir={1} dirs={2} staging={3}" -f $rollback.ExceptionMessage,$rollback.WorkingDirectory,$digestDirs.Count,$staging.Count)
+        }
+
+        # A tampered retained bundle must be refused rather than re-registered.
+        [IO.File]::AppendAllText((Join-Path $previousDir 'HelloApproval.Validation.psm1'), "# tampered`n")
+        $tampered = Invoke-InstallerToRegistrationBoundary -Installer $rollbackRepo.Installer -LocalAppData $migrationLocal -ConfigPath $migrationConfig
+        if ($tampered.ExceptionMessage -match 'Installed launcher bundle contains mismatched bytes' -and $null -eq $tampered.WorkingDirectory) {
+            Pass 'rollback refuses a tampered retained bundle before registration'
+        } else {
+            Fail 'rollback refuses a tampered retained bundle before registration' ("exception={0} workdir={1}" -f $tampered.ExceptionMessage,$tampered.WorkingDirectory)
+        }
+    }
+
     Write-Host ''
     Write-Host ("RESULT passed={0} failed={1} mode={2}" -f $script:Passed,$script:Failed,$(if($ExpectedPhase1){'Phase1'}else{'Hardened'}))
     if ($script:Failed -ne 0) { exit 1 }
