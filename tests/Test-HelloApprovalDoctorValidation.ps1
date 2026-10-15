@@ -87,7 +87,8 @@ function New-Fixture {
         [switch]$NonObjectUpstream,
         [switch]$PreviousGenerationLauncher,
         [switch]$OmitCurrentLauncher,
-        [AllowNull()][string]$ReleaseTag
+        [AllowNull()][string]$ReleaseTag,
+        [AllowNull()][string]$PinnedAgentName
     )
 
     $tool = Join-Path $Root 'tool'
@@ -245,6 +246,10 @@ function New-Fixture {
     if($NonStringReleaseTag){$pin.upstream.release_tag=$true}
     if($NonObjectUpstream){$pin.upstream='v-test'}
     if($PSBoundParameters.ContainsKey('ReleaseTag')){$pin.upstream.release_tag=$ReleaseTag}
+    if($PSBoundParameters.ContainsKey('PinnedAgentName')){
+        $pin.files[1].name=$PinnedAgentName
+        $pin.installation_policy.installed_files=@('sshenc.exe',$PinnedAgentName)
+    }
     $pinText=if($MalformedPinJson){'{ this is not valid json'}elseif($NullPinJson){'null'}else{$pin|ConvertTo-Json -Depth 20}
     # Keep the pin ASCII so non-ASCII fixture tags survive the reader's default PS5.1 encoding.
     $pinText=[regex]::Replace($pinText,'[^\x00-\x7F]',{param($m) '\u{0:X4}' -f [int][char]$m.Value})
@@ -357,6 +362,9 @@ try {
         [pscustomobject]@{Name='upgraded install retaining the previous bundle generation';Args=@{PreviousGenerationLauncher=$true};Kind='launcher-retained-previous'},
         [pscustomobject]@{Name='signing public key through .ssh junction';Args=@{PublicKeyThroughJunction=$true};Kind='public-key-junction'},
         [pscustomobject]@{Name='malformed unused pin leaf name';Args=@{MalformedUnusedName=$true};Kind='pin-delta'},
+        [pscustomobject]@{Name='Windows-invalid required pinned file name';Args=@{PinnedAgentName='a|b'};Kind='policy-validation-block'},
+        [pscustomobject]@{Name='reserved-device required pinned file name';Args=@{PinnedAgentName='CON.exe'};Kind='policy-validation-block'},
+        [pscustomobject]@{Name='overlong required pinned file name';Args=@{PinnedAgentName=('n'*256)};Kind='policy-validation-block'},
         [pscustomobject]@{Name='malformed provenance JSON';Args=@{MalformedPinJson=$true};Kind='provenance-block';Check='pin.parse'},
         [pscustomobject]@{Name='missing provenance pin';Args=@{PinMissing=$true};Kind='provenance-block';Check='pin.present'},
         [pscustomobject]@{Name='non-object upstream';Args=@{NonObjectUpstream=$true};Kind='provenance-block';Check='pin.upstream.release-tag'},
@@ -504,7 +512,21 @@ try {
                     }
                 }
             }
+            'policy-validation-block' {
+                $policyBlocks = @($result.Json.findings | Where-Object { $_.severity -eq 'BLOCK' -and $_.check -eq 'pin.policy.validation' })
+                if($ExpectedPhase1){
+                    Write-Host ('SKIP  {0}: shared file-name validation is a Phase 2 contract' -f $case.Name)
+                } elseif($result.ExitCode -eq 2 -and $policyBlocks.Count -eq 1){
+                    Pass ('hardened Doctor classifies {0} as structured pin.policy.validation BLOCK' -f $case.Name)
+                } else {
+                    Fail ('hardened Doctor classifies {0} as structured pin.policy.validation BLOCK' -f $case.Name) ('rc={0} findings={1}' -f $result.ExitCode,(($result.Json.findings | Where-Object { $_.severity -eq 'BLOCK' } | ConvertTo-Json -Depth 8) -join ''))
+                }
+            }
             'launcher-upgrade-required' {
+                if($ExpectedPhase1){
+                    Write-Host ('SKIP  {0}: content-addressed bundle generations are a Phase 2 contract' -f $case.Name)
+                    continue
+                }
                 $missing = @($result.Json.findings | Where-Object { $_.severity -eq 'BLOCK' -and $_.check -eq 'launcher.cache' -and [string]$_.message -match 'bundle directory is missing' })
                 if($result.ExitCode -eq 2 -and $missing.Count -eq 1 -and -not (Has-Finding $result 'PASS' 'launcher.cache')){
                     Pass 'Doctor reports a previous-generation-only install as launcher.cache upgrade-required BLOCK'
@@ -513,6 +535,10 @@ try {
                 }
             }
             'launcher-retained-previous' {
+                if($ExpectedPhase1){
+                    Write-Host ('SKIP  {0}: content-addressed bundle generations are a Phase 2 contract' -f $case.Name)
+                    continue
+                }
                 if(Has-Finding $result 'PASS' 'launcher.cache'){
                     Pass 'Doctor accepts the current bundle while a previous generation is retained for rollback'
                 } else {
