@@ -145,9 +145,18 @@ public static class Program {
             return 0;
         }
         if (args.Length == 2 && args[0] == "config" && args[1] == "show") {
+            string labels = Environment.GetEnvironmentVariable("HELLO_APPROVAL_TEST_ALLOWED_LABELS");
             Console.WriteLine(@"socket_path = '\\.\pipe\sshenc-github-signing'");
-            Console.WriteLine("allowed_labels = [\"github-signing\"]");
+            Console.WriteLine("allowed_labels = " + (labels ?? "[\"github-signing\"]"));
             Console.WriteLine("prompt_policy = \"always\"");
+            return 0;
+        }
+        if (args.Length == 2 && args[0] == "list" && args[1] == "--json") {
+            string exitText = Environment.GetEnvironmentVariable("HELLO_APPROVAL_TEST_LIST_EXIT");
+            if (!String.IsNullOrEmpty(exitText)) { return Int32.Parse(exitText); }
+            string listPath = Environment.GetEnvironmentVariable("HELLO_APPROVAL_TEST_LIST_JSON");
+            if (String.IsNullOrEmpty(listPath) || !System.IO.File.Exists(listPath)) { return 3; }
+            Console.Write(System.IO.File.ReadAllText(listPath));
             return 0;
         }
         return 2;
@@ -439,10 +448,60 @@ function Test-BundleSentinelTime {
     return (@($items | Where-Object { $_.CreationTimeUtc -ne $bundleSentinelTime }).Count -eq 0)
 }
 
+function Get-SshFingerprint([byte[]]$Blob) {
+    return 'SHA256:' + [Convert]::ToBase64String([Security.Cryptography.SHA256]::Create().ComputeHash($Blob)).TrimEnd('=')
+}
+
+function New-SigningIdentityFixture {
+    # Isolated USERPROFILE with a canonical ~/.ssh/github-signing.pub. The installer derives the single
+    # expected sshenc label from the credential whose fingerprint matches this key (#45).
+    param([string]$Root)
+
+    $profileRoot = Join-Path $Root 'profile'
+    $ssh = Join-Path $profileRoot '.ssh'
+    [void][IO.Directory]::CreateDirectory($ssh)
+    $blob = [Text.Encoding]::ASCII.GetBytes('hello-approval synthetic canonical signing key blob')
+    $publicKey = Join-Path $ssh 'github-signing.pub'
+    [IO.File]::WriteAllText($publicKey, ('sk-ecdsa-sha2-nistp256@openssh.com {0} synthetic' -f [Convert]::ToBase64String($blob)), [Text.UTF8Encoding]::new($false))
+    return [pscustomobject]@{
+        Profile = $profileRoot
+        PublicKey = $publicKey
+        Fingerprint = Get-SshFingerprint $blob
+        OtherFingerprint = Get-SshFingerprint ([Text.Encoding]::ASCII.GetBytes('hello-approval synthetic unrelated key blob'))
+        ListPath = Join-Path $Root 'sshenc-list.json'
+    }
+}
+
+function Set-CredentialList {
+    # Writes the fake `sshenc list --json` output in the upstream v0.6.101 shape.
+    param([string]$Path, [object[]]$Entries)
+
+    $items = @(foreach ($entry in $Entries) {
+        [ordered]@{
+            metadata = [ordered]@{ label = $entry.Label; algorithm = 'SkEcdsaP256' }
+            fingerprint_sha256 = $entry.Fingerprint
+        }
+    })
+    $json = if ($items.Count -eq 0) { '[]' } else { ConvertTo-Json -InputObject @($items) -Depth 5 }
+    [IO.File]::WriteAllText($Path, $json, [Text.UTF8Encoding]::new($false))
+}
+
 $root = Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-task-installer-' + [Guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($root)
 
+$identityEnvNames = @('USERPROFILE', 'HELLO_APPROVAL_TEST_LIST_JSON', 'HELLO_APPROVAL_TEST_LIST_EXIT', 'HELLO_APPROVAL_TEST_ALLOWED_LABELS')
+$savedIdentityEnv = @{}
+foreach ($name in $identityEnvNames) { $savedIdentityEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+
 try {
+    # Every installer run below sees only the synthetic signing identity, never the real profile.
+    $identity = New-SigningIdentityFixture -Root (Join-Path $root 'identity')
+    Set-CredentialList -Path $identity.ListPath -Entries @(@{ Label = 'github-signing'; Fingerprint = $identity.Fingerprint })
+    $env:USERPROFILE = $identity.Profile
+    $env:HELLO_APPROVAL_TEST_LIST_JSON = $identity.ListPath
+    [Environment]::SetEnvironmentVariable('HELLO_APPROVAL_TEST_LIST_EXIT', $null, 'Process')
+    [Environment]::SetEnvironmentVariable('HELLO_APPROVAL_TEST_ALLOWED_LABELS', $null, 'Process')
+
     # Exact fixture.
     $exactRoot = Join-Path $root 'exact'
     [void][IO.Directory]::CreateDirectory($exactRoot)
@@ -655,10 +714,88 @@ try {
         }
     }
 
+    if (-not $ExpectedPhase1) {
+        # #45: the single exposed label is the label of the credential whose public key is the canonical
+        # ~/.ssh/github-signing.pub, compared exactly. A name alone is never enough.
+        $labelRoot = Join-Path $root 'label'
+        [void][IO.Directory]::CreateDirectory($labelRoot)
+        $labelRepo = New-SyntheticRepo -Root $labelRoot
+        $labelLocal = Join-Path $labelRoot 'local'
+        $labelConfig = Join-Path $labelRoot 'config\config.toml'
+        [void](New-SyntheticRuntime -LocalAppData $labelLocal -PinPath $labelRepo.PinPath -ConfigPath $labelConfig)
+        $caseList = Join-Path $labelRoot 'case-list.json'
+
+        $labelCases = @(
+            @{ Name = 'per-host label of the canonical credential is accepted'; Entries = @(@{ Label = 'github-signing-host1'; Fingerprint = $identity.Fingerprint }); Allowed = '["github-signing-host1"]'; Expect = $null },
+            @{ Name = 'canonical credential among unrelated credentials is accepted'; Entries = @(@{ Label = 'work-auth'; Fingerprint = $identity.OtherFingerprint }, @{ Label = 'github-signing-host1'; Fingerprint = $identity.Fingerprint }); Allowed = '["github-signing-host1"]'; Expect = $null },
+            @{ Name = 'default label is refused when the canonical credential has another label'; Entries = @(@{ Label = 'github-signing-host1'; Fingerprint = $identity.Fingerprint }); Allowed = '["github-signing"]'; Expect = 'must contain exactly the canonical signing credential label' },
+            @{ Name = 'a github-signing-named credential that is not the canonical key is refused'; Entries = @(@{ Label = 'github-signing'; Fingerprint = $identity.OtherFingerprint }, @{ Label = 'github-signing-host1'; Fingerprint = $identity.Fingerprint }); Allowed = '["github-signing"]'; Expect = 'must contain exactly the canonical signing credential label' },
+            @{ Name = 'case-variant label is refused'; Entries = @(@{ Label = 'github-signing-host1'; Fingerprint = $identity.Fingerprint }); Allowed = '["GitHub-Signing-Host1"]'; Expect = 'must contain exactly the canonical signing credential label' },
+            @{ Name = 'empty allowed_labels (upstream expose-all) is refused'; Entries = @(@{ Label = 'github-signing'; Fingerprint = $identity.Fingerprint }); Allowed = '[]'; Expect = 'must contain exactly the canonical signing credential label' },
+            @{ Name = 'two allowed labels are refused'; Entries = @(@{ Label = 'github-signing'; Fingerprint = $identity.Fingerprint }); Allowed = '["github-signing", "work-auth"]'; Expect = 'must contain exactly the canonical signing credential label' },
+            @{ Name = 'no credential for the canonical key is refused'; Entries = @(@{ Label = 'github-signing'; Fingerprint = $identity.OtherFingerprint }); Allowed = '["github-signing"]'; Expect = 'Expected exactly one sshenc credential matching the canonical signing public key' },
+            @{ Name = 'empty credential list is refused'; Entries = @(); Allowed = '["github-signing"]'; Expect = 'Expected exactly one sshenc credential matching the canonical signing public key' },
+            @{ Name = 'two credentials for the canonical key are refused'; Entries = @(@{ Label = 'github-signing'; Fingerprint = $identity.Fingerprint }, @{ Label = 'github-signing-host1'; Fingerprint = $identity.Fingerprint }); Allowed = '["github-signing"]'; Expect = 'Expected exactly one sshenc credential matching the canonical signing public key' },
+            @{ Name = 'invalid credential label grammar is refused'; Entries = @(@{ Label = 'github signing'; Fingerprint = $identity.Fingerprint }); Allowed = '["github signing"]'; Expect = 'is not a valid sshenc label' },
+            @{ Name = 'malformed sshenc list JSON is refused'; Raw = '{ not json'; Allowed = '["github-signing"]'; Expect = 'did not return a JSON credential array' },
+            @{ Name = 'sshenc list entry without a label is refused'; Raw = ('[{"metadata":{},"fingerprint_sha256":"' + $identity.Fingerprint + '"}]'); Allowed = '["github-signing"]'; Expect = 'did not return a JSON credential array' },
+            @{ Name = 'failing sshenc list is refused'; ListExit = '5'; Entries = @(); Allowed = '["github-signing"]'; Expect = 'list --json failed with exit 5' }
+        )
+
+        foreach ($labelCase in $labelCases) {
+            if ($labelCase.ContainsKey('Raw')) {
+                [IO.File]::WriteAllText($caseList, $labelCase.Raw, [Text.UTF8Encoding]::new($false))
+            } else {
+                Set-CredentialList -Path $caseList -Entries $labelCase.Entries
+            }
+            $env:HELLO_APPROVAL_TEST_LIST_JSON = $caseList
+            $env:HELLO_APPROVAL_TEST_ALLOWED_LABELS = $labelCase.Allowed
+            if ($labelCase.ContainsKey('ListExit')) { $env:HELLO_APPROVAL_TEST_LIST_EXIT = $labelCase.ListExit }
+            try {
+                $labelResult = Invoke-InstallerWhatIf -Installer $labelRepo.Installer -LocalAppData $labelLocal -ConfigPath $labelConfig
+            } finally {
+                $env:HELLO_APPROVAL_TEST_LIST_JSON = $identity.ListPath
+                [Environment]::SetEnvironmentVariable('HELLO_APPROVAL_TEST_ALLOWED_LABELS', $null, 'Process')
+                [Environment]::SetEnvironmentVariable('HELLO_APPROVAL_TEST_LIST_EXIT', $null, 'Process')
+            }
+            $labelOutput = $labelResult.Output -join ' | '
+            $labelMutated = Test-Path -LiteralPath (Join-Path $labelLocal 'hello-approval\app\launcher')
+            $ok = if ($null -eq $labelCase.Expect) {
+                $labelResult.ExitCode -eq 0
+            } else {
+                $labelResult.ExitCode -ne 0 -and $labelOutput -match [regex]::Escape($labelCase.Expect)
+            }
+            if ($ok -and -not $labelMutated) { Pass ('signing label: ' + $labelCase.Name) }
+            else { Fail ('signing label: ' + $labelCase.Name) ("rc={0} mutated={1} output={2}" -f $labelResult.ExitCode,$labelMutated,$labelOutput) }
+        }
+
+        # Canonical public-key preconditions (same contract as the Git signing installer).
+        $publicKeyText = [IO.File]::ReadAllText($identity.PublicKey)
+        $keyCases = @(
+            @{ Name = 'missing canonical public key is refused'; Text = $null; Expect = 'Trusted path component is missing' },
+            @{ Name = 'non-SK canonical public key is refused'; Text = ($publicKeyText -replace '^sk-ecdsa-sha2-nistp256@openssh.com', 'ssh-ed25519'); Expect = 'Signing public key must be an sk-ecdsa-sha2-nistp256@openssh.com key' },
+            @{ Name = 'two-line canonical public key is refused'; Text = ($publicKeyText + "`n" + $publicKeyText); Expect = 'Signing public key must contain exactly one non-empty line' },
+            @{ Name = 'non-base64 canonical public key is refused'; Text = 'sk-ecdsa-sha2-nistp256@openssh.com not*base64 synthetic'; Expect = 'Signing public key blob is not valid base64' }
+        )
+        foreach ($keyCase in $keyCases) {
+            try {
+                if ($null -eq $keyCase.Text) { [IO.File]::Delete($identity.PublicKey) }
+                else { [IO.File]::WriteAllText($identity.PublicKey, $keyCase.Text, [Text.UTF8Encoding]::new($false)) }
+                $keyResult = Invoke-InstallerWhatIf -Installer $labelRepo.Installer -LocalAppData $labelLocal -ConfigPath $labelConfig
+            } finally {
+                [IO.File]::WriteAllText($identity.PublicKey, $publicKeyText, [Text.UTF8Encoding]::new($false))
+            }
+            $keyOutput = $keyResult.Output -join ' | '
+            if ($keyResult.ExitCode -ne 0 -and $keyOutput -match [regex]::Escape($keyCase.Expect)) { Pass ('signing label: ' + $keyCase.Name) }
+            else { Fail ('signing label: ' + $keyCase.Name) ("rc={0} output={1}" -f $keyResult.ExitCode,$keyOutput) }
+        }
+    }
+
     Write-Host ''
     Write-Host ("RESULT passed={0} failed={1} mode={2}" -f $script:Passed,$script:Failed,$(if($ExpectedPhase1){'Phase1'}else{'Hardened'}))
     if ($script:Failed -ne 0) { exit 1 }
     exit 0
 } finally {
+    foreach ($name in $identityEnvNames) { [Environment]::SetEnvironmentVariable($name, $savedIdentityEnv[$name], 'Process') }
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

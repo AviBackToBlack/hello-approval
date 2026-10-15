@@ -11,6 +11,8 @@ $TaskName = 'hello-approval Git Signing Agent'
 $TaskPath = '\'
 $TaskMarker = 'hello-approval/ha-1.3/v1'
 $SocketPath = '\\.\pipe\sshenc-github-signing'
+$PublicKeyLeaf = 'github-signing.pub'
+$ExpectedKeyType = 'sk-ecdsa-sha2-nistp256@openssh.com'
 
 function Get-FileSha256 {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -79,8 +81,94 @@ function Ensure-TrustedProjectDirectory {
     [void](Assert-HelloApprovalTrustedPath -TrustedBase $env:LOCALAPPDATA -Path $Path -ExpectedType Directory)
 }
 
+function Get-CanonicalSigningKeyFingerprint {
+    # OpenSSH SHA256 fingerprint of the canonical signing public key, the same trust anchor the Git
+    # signing and local-verification installers use.
+    $publicKeyPath = Join-Path (Join-Path $env:USERPROFILE '.ssh') $PublicKeyLeaf
+    $publicKeyPath = Assert-HelloApprovalTrustedPath -TrustedBase $env:USERPROFILE -Path $publicKeyPath -ExpectedType File
+    $keyLines = @(Get-Content -LiteralPath $publicKeyPath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($keyLines.Count -ne 1) { throw "Signing public key must contain exactly one non-empty line: $publicKeyPath" }
+    $keyParts = @(([string]$keyLines[0]).Trim() -split '\s+')
+    if ($keyParts.Count -lt 2 -or $keyParts[0] -cne $ExpectedKeyType) {
+        throw "Signing public key must be an $ExpectedKeyType key: $publicKeyPath"
+    }
+    try {
+        $blob = [Convert]::FromBase64String($keyParts[1])
+    } catch {
+        throw "Signing public key blob is not valid base64: $publicKeyPath"
+    }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return 'SHA256:' + [Convert]::ToBase64String($sha.ComputeHash($blob)).TrimEnd('=')
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+function Get-CanonicalSigningCredentialLabel {
+    # The one sshenc label the agent may expose is the label of the credential whose public key is the
+    # canonical signing key, so the label is bound to the key Git trusts rather than to a fixed name.
+    param(
+        [Parameter(Mandatory = $true)][string]$SshencPath,
+        [Parameter(Mandatory = $true)][string]$Fingerprint
+    )
+
+    $saved = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $raw = @(& $SshencPath list --json 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $saved
+    }
+    if ($exitCode -ne 0) {
+        throw "Pinned sshenc.exe list --json failed with exit $exitCode."
+    }
+
+    $text = (@($raw | Where-Object { -not ($_ -is [System.Management.Automation.ErrorRecord]) } | ForEach-Object { [string]$_ }) -join "`n").Trim()
+    $entries = $null
+    if ($text.StartsWith('[')) {
+        # Windows PowerShell 5.1 emits a JSON array as one pipeline object; enumerate it explicitly.
+        try {
+            $parsed = ConvertFrom-Json -InputObject $text
+            $entries = @(foreach ($item in $parsed) { $item })
+        } catch {
+            $entries = $null
+        }
+    }
+    if ($null -eq $entries) {
+        throw 'Pinned sshenc.exe list --json did not return a JSON credential array.'
+    }
+
+    $labelMatches = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in $entries) {
+        $metadataProperty = if ($entry -is [pscustomobject]) { $entry.PSObject.Properties['metadata'] } else { $null }
+        $labelProperty = if ($null -ne $metadataProperty -and $metadataProperty.Value -is [pscustomobject]) { $metadataProperty.Value.PSObject.Properties['label'] } else { $null }
+        $fingerprintProperty = if ($entry -is [pscustomobject]) { $entry.PSObject.Properties['fingerprint_sha256'] } else { $null }
+        if ($null -eq $labelProperty -or -not ($labelProperty.Value -is [string]) -or
+            $null -eq $fingerprintProperty -or -not ($fingerprintProperty.Value -is [string])) {
+            throw 'Pinned sshenc.exe list --json did not return a JSON credential array.'
+        }
+        if ([string]$fingerprintProperty.Value -ceq $Fingerprint) {
+            $labelMatches.Add([string]$labelProperty.Value)
+        }
+    }
+
+    if ($labelMatches.Count -ne 1) {
+        throw "Expected exactly one sshenc credential matching the canonical signing public key $Fingerprint, found $($labelMatches.Count)."
+    }
+    $label = $labelMatches[0]
+    if ($label -cnotmatch '\A[A-Za-z0-9_-]{1,64}\z') {
+        throw "Canonical signing credential label is not a valid sshenc label: '$label'."
+    }
+    return $label
+}
+
 function Assert-EffectiveConfig {
-    param([Parameter(Mandatory = $true)][string]$SshencPath)
+    param(
+        [Parameter(Mandatory = $true)][string]$SshencPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedLabel
+    )
 
     $lines = @(& $SshencPath config show 2>&1 | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
     if ($LASTEXITCODE -ne 0) {
@@ -110,9 +198,10 @@ function Assert-EffectiveConfig {
         throw "Effective sshenc socket_path must be '$SocketPath', got '$effectiveSocket'."
     }
 
+    # Exactly one label, compared case-sensitively. An empty list is upstream "expose all" (fail-open).
     $labelsValue = [string]$values['allowed_labels']
-    if ($labelsValue -ne '["github-signing"]') {
-        throw "Effective sshenc allowed_labels must contain exactly github-signing, got '$($values['allowed_labels'])'."
+    if ($labelsValue -cne ('["{0}"]' -f $ExpectedLabel)) {
+        throw "Effective sshenc allowed_labels must contain exactly the canonical signing credential label '$ExpectedLabel', got '$($values['allowed_labels'])'."
     }
 
     $promptValue = [string]$values['prompt_policy']
@@ -334,7 +423,8 @@ if ($LASTEXITCODE -ne 0 -or $configOutput.Count -ne 1) {
     throw "Pinned sshenc.exe did not return exactly one config path (exit=$LASTEXITCODE, lines=$($configOutput.Count))."
 }
 $configPath = Assert-RegularFile -Path $configOutput[0] -Purpose 'sshenc config'
-Assert-EffectiveConfig -SshencPath $sshencPath
+$signingLabel = Get-CanonicalSigningCredentialLabel -SshencPath $sshencPath -Fingerprint (Get-CanonicalSigningKeyFingerprint)
+Assert-EffectiveConfig -SshencPath $sshencPath -ExpectedLabel $signingLabel
 
 $sourceLauncher = Assert-RegularFile -Path $sourceLauncher -Purpose 'Repository HA-1.2 launcher'
 $sourceValidationModule = Assert-RegularFile -Path $validationModulePath -Purpose 'Repository hello-approval validation module'
