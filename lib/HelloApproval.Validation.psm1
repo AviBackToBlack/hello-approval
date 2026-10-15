@@ -111,7 +111,7 @@ function Assert-HelloApprovalUniqueWindowsNames {
         }
         $name = [string]$raw
         if (-not (Test-HelloApprovalLeafName -Name $name)) {
-            throw "$Purpose contains an invalid non-leaf name: '$name'"
+            throw "$Purpose contains a name that is not a usable Windows file-name component: '$name'"
         }
         if (-not $seen.Add($name)) {
             throw "$Purpose contains duplicate/case-colliding Windows name: '$name'"

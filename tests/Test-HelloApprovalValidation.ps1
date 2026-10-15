@@ -257,7 +257,7 @@ try {
         $pinCases += [pscustomobject]@{
             Name="pin invalid file leaf [$bad]"
             Pin=$p
-            Expected='Provenance file records contains an invalid non-leaf name'
+            Expected='Provenance file records contains a name that is not a usable Windows file-name component'
         }
     }
 
@@ -285,7 +285,7 @@ try {
         $pinCases += [pscustomobject]@{
             Name="pin invalid installed leaf [$bad]"
             Pin=$p
-            Expected='installation_policy.installed_files contains an invalid non-leaf name'
+            Expected='installation_policy.installed_files contains a name that is not a usable Windows file-name component'
         }
     }
 
