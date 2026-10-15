@@ -34,8 +34,17 @@ Proposed public operations:
 - `Assert-HelloApprovalTrustedPath`
 - `Get-HelloApprovalFileSha256`
 - `Assert-HelloApprovalPinnedRuntime`
+- `Test-HelloApprovalReleaseTag`
 
 Names may change during implementation review; the semantics below are the design gate.
+
+## Windows file-name component predicate
+
+The module owns one authoritative predicate for "usable single Windows path component". A value passes only if it is a string that is not blank, `.` or `..`; contains no `[IO.Path]::GetInvalidFileNameChars()` character (both separators, `:`, wildcards, control characters); is not rooted or drive-qualified; does not end in a dot or space; is not a reserved device name (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `CLOCK$`, `COM`/`LPT` followed by `0`-`9` or a superscript `1`-`3`, alone, with an extension, or in the legacy `NAME .ext` form); and is at most 255 characters.
+
+- Pinned file names (`files[].name` and `installation_policy.installed_files`) use it inside `Assert-HelloApprovalPinPolicy`, so a violation fails with the shared policy error and callers keep their existing `pin.policy.validation` classification.
+- `Test-HelloApprovalReleaseTag` exposes the same predicate as a boolean that never throws, for the caller-owned `upstream.release_tag` gate. `Assert-HelloApprovalPinPolicy` deliberately does not validate `upstream.release_tag`: Preflight and Doctor classify a failure as `pin.upstream.release-tag` BLOCK, and the installers and Uninstall refuse with their own messages.
+- Context-dependent path rules stay with the callers: MAX_PATH bounds on composed runtime paths, the runtime installer's staging-directory bound, and Uninstall's cleanup semantics.
 
 ## Provenance-pin policy
 
@@ -43,10 +52,10 @@ Names may change during implementation review; the semantics below are the desig
 
 - schema exactly `hello-approval/upstream-pin/v1`;
 - file names are non-empty and unique under Windows ordinal-ignore-case comparison so a pin cannot describe two names that collide in the normal Windows namespace;
-- each file name is one leaf name only: not `.` or `..`, and containing neither forward nor backward path separators;
+- each file name is one usable Windows file-name component (see the predicate above);
 - dispositions are exactly from `required`, `unused`, `excluded`;
 - `installation_policy.installed_files` contains non-empty names unique under Windows ordinal-ignore-case comparison;
-- each `installed_files` entry is likewise one leaf name only: not `.` or `..`, with no path separators;
+- each `installed_files` entry is likewise one usable Windows file-name component;
 - after rejecting ignore-case name collisions, the exact case-sensitive `installed_files` set equals the exact set of records whose disposition is `required`;
 - every installed file has exactly one required provenance record;
 - required sizes are non-negative integers;
