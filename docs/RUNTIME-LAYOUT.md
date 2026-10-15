@@ -183,6 +183,8 @@ Exit codes:
 
 A warning is not permission to overwrite state. It means the later mutation must either preserve that state or require an explicit reviewed decision.
 
+If Git cannot read its configuration, for example because a config file in any scope is malformed, preflight does not treat the settings as absent. Git aborts every `git config` read in that case, whichever scope is being queried. Preflight therefore emits a `git.<scope>.readable` BLOCK for each scope it attempts, with Git's own error message as the value; that message names the offending file. It marks every remaining key of that scope as an `INFO` "not evaluated" finding under its normal `git.<scope>.<key>` check ID. The report stays complete and structured (`blocked=true`, exit `2`); it is not an aborted result with an `error` field.
+
 ## 8. Inert runtime installation
 
 After obtaining the exact pinned ZIP, install the approved binary surface with:

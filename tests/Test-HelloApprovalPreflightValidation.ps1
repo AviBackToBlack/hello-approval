@@ -54,6 +54,8 @@ function New-Fixture {
         [switch]$RuntimeMissing,
         [switch]$ValidationModuleMissing,
         [switch]$PinMissing,
+        [switch]$MalformedSystemGitConfig,
+        [switch]$MalformedGlobalGitConfig,
         [switch]$MalformedPinJson,
         [switch]$MissingUpstream,
         [switch]$MissingReleaseTag,
@@ -168,7 +170,17 @@ function New-Fixture {
         Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
     }
 
+    $systemGitConfig=$null
+    if($MalformedSystemGitConfig){
+        $systemGitConfig=Join-Path $Root 'system.gitconfig'
+        [IO.File]::WriteAllText($systemGitConfig,"[core`n    broken = ",[Text.UTF8Encoding]::new($false))
+    }
+    if($MalformedGlobalGitConfig){
+        [IO.File]::WriteAllText((Join-Path $profile '.gitconfig'),"[core`n    broken = ",[Text.UTF8Encoding]::new($false))
+    }
+
     return [pscustomobject]@{
+        SystemGitConfig=$systemGitConfig
         Preflight=Join-Path $scripts 'Test-HelloApprovalPreflight.ps1'
         LocalAppData=$local
         AppData=$app
@@ -186,7 +198,16 @@ function Invoke-Preflight {
     $oldSocket=$env:SSHENC_AGENT_SOCKET
     $oldAuth=$env:SSH_AUTH_SOCK
     $oldGitSsh=$env:GIT_SSH_COMMAND
+    $gitSourceNames=@(@('XDG_CONFIG_HOME','GIT_CONFIG_SYSTEM','GIT_CONFIG_GLOBAL') + @(Get-ChildItem Env: | Where-Object { $_.Name -eq 'GIT_CONFIG' -or $_.Name -like 'GIT_CONFIG_*' } | ForEach-Object { $_.Name }) | Select-Object -Unique)
+    $oldGitSources=@{}
+    foreach($name in $gitSourceNames){ $oldGitSources[$name]=[Environment]::GetEnvironmentVariable($name,'Process') }
     try {
+        # Fixture files must be the only Git config sources in play. GIT_CONFIG_NOSYSTEM would not keep the host
+        # system file out of explicit --system reads, so the system scope is always pinned: to the fixture file
+        # when one is supplied, otherwise to an absent fixture path (Git treats a missing file as empty).
+        foreach($name in $gitSourceNames){ [Environment]::SetEnvironmentVariable($name,$null,'Process') }
+        $env:GIT_CONFIG_SYSTEM=if($null -ne $Fixture.SystemGitConfig){$Fixture.SystemGitConfig}else{Join-Path $Fixture.UserProfile 'absent-system.gitconfig'}
+        $env:GIT_CONFIG_GLOBAL=Join-Path $Fixture.UserProfile '.gitconfig'
         $env:LOCALAPPDATA=$Fixture.LocalAppData
         $env:APPDATA=$Fixture.AppData
         $env:USERPROFILE=$Fixture.UserProfile
@@ -212,6 +233,7 @@ function Invoke-Preflight {
         if($null -eq $oldSocket){Remove-Item Env:SSHENC_AGENT_SOCKET -ErrorAction SilentlyContinue}else{$env:SSHENC_AGENT_SOCKET=$oldSocket}
         if($null -eq $oldAuth){Remove-Item Env:SSH_AUTH_SOCK -ErrorAction SilentlyContinue}else{$env:SSH_AUTH_SOCK=$oldAuth}
         if($null -eq $oldGitSsh){Remove-Item Env:GIT_SSH_COMMAND -ErrorAction SilentlyContinue}else{$env:GIT_SSH_COMMAND=$oldGitSsh}
+        foreach($name in $gitSourceNames){ [Environment]::SetEnvironmentVariable($name,$oldGitSources[$name],'Process') }
     }
 }
 
@@ -252,6 +274,8 @@ try {
         [pscustomobject]@{Name='missing runtime';Args=@{RuntimeMissing=$true};Kind='missing'},
         [pscustomobject]@{Name='missing validation module';Args=@{ValidationModuleMissing=$true};Kind='module-migration'},
         [pscustomobject]@{Name='missing provenance pin';Args=@{PinMissing=$true};Kind='required-structured-block'},
+        [pscustomobject]@{Name='unreadable system Git config';Args=@{MalformedSystemGitConfig=$true};Kind='git-scope-unreadable';Scope='system'},
+        [pscustomobject]@{Name='unreadable global Git config';Args=@{MalformedGlobalGitConfig=$true};Kind='git-scope-unreadable';Scope='global'},
         [pscustomobject]@{Name='malformed provenance JSON';Args=@{MalformedPinJson=$true};Kind='pin-parse-block'},
         [pscustomobject]@{Name='missing upstream object';Args=@{MissingUpstream=$true};Kind='release-tag-block'},
         [pscustomobject]@{Name='missing upstream release tag';Args=@{MissingReleaseTag=$true};Kind='release-tag-block'},
@@ -337,6 +361,34 @@ try {
             continue
         }
 
+        if($case.Kind -eq 'git-scope-unreadable'){
+            if(@($result.Json.findings | Where-Object { $_.check -eq 'git.present' -and $_.severity -eq 'WARN' }).Count -gt 0){
+                Write-Host ('SKIP  {0} requires Git on PATH' -f $case.Name)
+                continue
+            }
+            # A malformed file in any scope makes every git config read fatal, so completeness is
+            # asserted across both scopes and the BLOCK must name the actual offending file.
+            $gitKeys=@('core.sshCommand','gpg.format','gpg.ssh.program','gpg.ssh.allowedSignersFile','user.signingkey','commit.gpgsign','tag.gpgsign','user.name','user.email')
+            $brokenLeaf=if($case.Scope -eq 'system'){'system.gitconfig'}else{'.gitconfig'}
+            $readable=@($result.Json.findings | Where-Object { $_.severity -eq 'BLOCK' -and $_.check -like 'git.*.readable' })
+            $namesFile=@($readable | Where-Object { [string]$_.value -match [regex]::Escape($brokenLeaf) }).Count -eq $readable.Count
+            $complete=$true
+            foreach($scope in @('system','global')){
+                $scopeBlocked=@($readable | Where-Object { $_.check -eq ('git.{0}.readable' -f $scope) }).Count -gt 0
+                foreach($k in $gitKeys){
+                    $keyFindings=@($result.Json.findings | Where-Object { $_.check -eq ('git.{0}.{1}' -f $scope,$k) })
+                    if($keyFindings.Count -ne 1){ $complete=$false; continue }
+                    if($scopeBlocked -and -not ($keyFindings[0].severity -eq 'INFO' -and [string]$keyFindings[0].message -match 'not evaluated')){ $complete=$false }
+                }
+            }
+            $hasError=$null -ne $result.Json.PSObject.Properties['error']
+            if((Is-StructuredBlockedResult $result) -and $readable.Count -ge 1 -and $namesFile -and $complete -and -not $hasError){
+                Pass ('{0} keeps BLOCK, names the broken file, and accounts for every Git probe' -f $case.Name)
+            } else {
+                Fail ('{0} keeps BLOCK, names the broken file, and accounts for every Git probe' -f $case.Name) ('rc={0} blocked={1} readable={2} namesFile={3} complete={4} error={5}' -f $result.ExitCode,$result.Json.blocked,$readable.Count,$namesFile,$complete,$hasError)
+            }
+            continue
+        }
         if($case.Kind -in @('pin-parse-block','release-tag-block','distribution-block')){
             $expectedCheck=switch($case.Kind){
                 'pin-parse-block' {'pin.parse'}

@@ -9,6 +9,7 @@ $ErrorActionPreference = 'Stop'
 
 $findings = New-Object 'System.Collections.Generic.List[object]'
 $gitExe = $null
+$GitConfigUnreadable = New-Object object
 
 function Resolve-HelloApprovalGitExecutable {
     # Normal PowerShell application resolution: the first git.exe in PATH order wins (a git.cmd or
@@ -74,19 +75,23 @@ function Get-GitScopedValue {
     $oldPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $value = & $gitExe config ("--{0}" -f $Scope) --includes --get $Key 2>$null
+        $output = @(& $gitExe config ("--{0}" -f $Scope) --includes --get $Key 2>&1)
         $rc = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $oldPreference
     }
+    $value = @($output | Where-Object { -not ($_ -is [System.Management.Automation.ErrorRecord]) } | ForEach-Object { [string]$_ })
     if ($rc -eq 0) {
         return ($value -join "`n")
     }
     if ($rc -eq 1) {
         return $null
     }
-    Add-Finding -Severity 'BLOCK' -Check "git.$Scope.readable" -Message "Git could not read $Scope configuration with includes enabled (exit $rc). Refusing to treat unreadable configuration as absent."
-    throw "git config --$Scope --includes --get $Key failed with exit $rc."
+    # A malformed config file in any scope makes every git config read fatal, so Git's own
+    # message (which names the offending file) is kept rather than guessing the culprit scope.
+    $stderr = @($output | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ -ne '' })
+    Add-Finding -Severity 'BLOCK' -Check "git.$Scope.readable" -Message "Git could not read configuration while evaluating $Scope scope with includes enabled (exit $rc). Refusing to treat unreadable configuration as absent." -Value ($stderr -join ' | ')
+    return $GitConfigUnreadable
 }
 
 try {
@@ -303,6 +308,7 @@ try {
     } else {
         Add-Finding -Severity 'PASS' -Check 'git.present' -Message 'Git is available.' -Value $gitExe
         foreach ($scope in @('system', 'global')) {
+            $scopeReadable = $true
             foreach ($key in @(
                 'core.sshCommand',
                 'gpg.format',
@@ -314,7 +320,14 @@ try {
                 'user.name',
                 'user.email'
             )) {
-                $value = Get-GitScopedValue -Scope $scope -Key $key
+                if ($scopeReadable) {
+                    $value = Get-GitScopedValue -Scope $scope -Key $key
+                    if ([object]::ReferenceEquals($value, $GitConfigUnreadable)) { $scopeReadable = $false }
+                }
+                if (-not $scopeReadable) {
+                    Add-Finding -Severity 'INFO' -Check "git.$scope.$key" -Message "$scope Git setting was not evaluated because Git configuration is unreadable."
+                    continue
+                }
                 if ($null -ne $value -and $value -ne '') {
                     $severity = 'INFO'
                     if ($key -eq 'core.sshCommand') {
