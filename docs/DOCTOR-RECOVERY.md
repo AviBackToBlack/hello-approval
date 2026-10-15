@@ -225,4 +225,10 @@ The Doctor now delegates shared validation concerns to lib/HelloApproval.Validat
 
 Shared assertion failures are translated into Doctor BLOCK findings rather than being reported as doctor.internal. The Doctor still owns the surrounding operational diagnosis: launcher CRLF/staleness explanation, exact launcher bundle composition, Scheduled Task definition/runtime, process/service state, pipe state, SSH configuration, Git precedence/effective values, and credential-shape checks.
 
-Malformed provenance input that fails before the parsed-pin policy assertion, such as invalid JSON or unusable caller-owned release metadata, remains separate hardening work tracked in issue #24.
+Doctor owns provenance-input classification outside the shared validator. The emitted checks are:
+
+- `pin.present`: the provenance JSON is missing.
+- `pin.parse`: the provenance JSON is unreadable or malformed.
+- `pin.upstream.release-tag`: `upstream.release_tag` is missing, non-string, blank, or not a usable Windows path component (separators/traversal, invalid filename characters or wildcards, rooted or drive-qualified forms, trailing dot/space, reserved device names, components over 255 characters), or its runtime file paths would exceed MAX_PATH (259 characters). The component checks run before any runtime path is constructed; the MAX_PATH check runs on the composed paths before any runtime probe.
+
+Each is a BLOCK finding in the `hello-approval/doctor/v1` result with `healthy=false` and exit code `2`, never `doctor.internal`. Because no trustworthy runtime path exists after any of these failures, Doctor stops after recording the BLOCK, the same as for an unavailable shared validation module; the trust and contract-probe findings collected before that point are kept.
