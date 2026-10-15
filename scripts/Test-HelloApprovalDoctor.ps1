@@ -18,6 +18,17 @@ $ExpectedKeyType = 'sk-ecdsa-sha2-nistp256@openssh.com'
 
 $findings = New-Object System.Collections.Generic.List[object]
 
+function Resolve-HelloApprovalGitExecutable {
+    # Normal PowerShell application resolution: the first git.exe in PATH order wins (a git.cmd or
+    # git.bat shim is not preferred). Several Git installations on PATH are not an error. Callers
+    # capture this one absolute path once and reuse it for every Git subprocess.
+    $candidates = @(Get-Command git.exe -CommandType Application -All -ErrorAction SilentlyContinue)
+    if ($candidates.Count -eq 0) {
+        $candidates = @(Get-Command git -CommandType Application -All -ErrorAction SilentlyContinue)
+    }
+    if ($candidates.Count -eq 0) { return $null }
+    return [string]$candidates[0].Source
+}
 function Add-Finding {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('PASS','INFO','WARN','BLOCK')][string]$Severity,
@@ -733,10 +744,8 @@ try {
         }
     }
 
-    $gitCommand = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue
-    if ($null -eq $gitCommand) { $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue }
-    if ($null -ne $gitCommand) {
-        $git = $gitCommand.Source
+    $git = Resolve-HelloApprovalGitExecutable
+    if ($null -ne $git) {
         foreach ($scope in @('system','global')) {
             foreach ($transportKey in @('core.sshCommand','core.sshVariant')) {
                 try {
@@ -806,10 +815,9 @@ try {
     } else {
         Add-Finding -Severity 'INFO' -Check 'ssh.config' -Message 'User SSH config does not exist.' -Value $sshConfigPath
     }
-    if ($null -eq $gitCommand) {
+    if ($null -eq $git) {
         Add-Finding -Severity 'BLOCK' -Check 'git.present' -Message 'Git executable is not available.'
     } else {
-        $git = $gitCommand.Source
         Add-Finding -Severity 'PASS' -Check 'git.present' -Message 'Git executable is available.' -Value $git
 
         $ownedGitFiles = @(
