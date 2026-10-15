@@ -219,6 +219,52 @@ try {
         Fail 'standalone launcher rejects tampered sibling validation module before import' ("rc={0} output={1}" -f $tamperedResult.ExitCode,($tamperedResult.Output -join ' | '))
     }
 
+    # Bundle generations: an install left on an earlier generation keeps launching from its own
+    # digest directory, and a module from another generation is refused before import.
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    $previousBundle = Join-Path $root 'previous-generation-bundle'
+    [void][IO.Directory]::CreateDirectory($previousBundle)
+    $previousModule = Join-Path $previousBundle 'HelloApproval.Validation.psm1'
+    [IO.File]::WriteAllText($previousModule, ([IO.File]::ReadAllText($sourceModule) + "# previous-generation bundle test fixture`n"), $utf8)
+    $previousModuleHash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes($previousModule)))).Replace('-','').ToLowerInvariant()
+    $pinPattern = "(?m)^\`$ValidationModuleSha256 = '[a-f0-9]{64}'$"
+    $launcherText = [IO.File]::ReadAllText($sourceLauncher)
+    if ([regex]::Matches($launcherText, $pinPattern).Count -ne 1) { throw 'Launcher must contain exactly one validation-module pin.' }
+    $previousLauncher = Join-Path $previousBundle 'Start-HelloApprovalAgent.ps1'
+    [IO.File]::WriteAllText($previousLauncher, [regex]::Replace($launcherText, $pinPattern, ("`$ValidationModuleSha256 = '{0}'" -f $previousModuleHash)), $utf8)
+
+    $previousLocal = Join-Path $root 'previous-bundle-local'
+    $previousLogs = Join-Path (Join-Path $previousLocal 'hello-approval') 'logs'
+    $previousResult = Invoke-Launcher -Launcher $previousLauncher -Agent $agent -Config $config -LocalAppData $previousLocal -LogDirectory $previousLogs
+    if ($previousResult.ExitCode -eq 0 -and (Test-Path -LiteralPath (Join-Path $previousLogs 'launcher.log') -PathType Leaf)) {
+        Pass 'previous-generation bundle still launches from its own pinned sibling module'
+    } else {
+        Fail 'previous-generation bundle still launches from its own pinned sibling module' ("rc={0} output={1}" -f $previousResult.ExitCode,($previousResult.Output -join ' | '))
+    }
+
+    $mixedBundle = Join-Path $root 'mixed-generation-bundle'
+    [void][IO.Directory]::CreateDirectory($mixedBundle)
+    Copy-Item -LiteralPath $sourceLauncher -Destination (Join-Path $mixedBundle 'Start-HelloApprovalAgent.ps1')
+    Copy-Item -LiteralPath $previousModule -Destination (Join-Path $mixedBundle 'HelloApproval.Validation.psm1')
+    $mixedLocal = Join-Path $root 'mixed-bundle-local'
+    $mixedLogs = Join-Path (Join-Path $mixedLocal 'hello-approval') 'logs'
+    $mixedResult = Invoke-Launcher -Launcher (Join-Path $mixedBundle 'Start-HelloApprovalAgent.ps1') -Agent $agent -Config $config -LocalAppData $mixedLocal -LogDirectory $mixedLogs
+    if ($mixedResult.ExitCode -eq 125 -and (($mixedResult.Output -join ' | ') -match 'validation module SHA-256 mismatch')) {
+        Pass 'current launcher refuses a previous-generation sibling module with exit 125'
+    } else {
+        Fail 'current launcher refuses a previous-generation sibling module with exit 125' ("rc={0} output={1}" -f $mixedResult.ExitCode,($mixedResult.Output -join ' | '))
+    }
+
+    [IO.File]::AppendAllText($previousModule, "# tampered`n")
+    $previousTamperedLocal = Join-Path $root 'previous-tampered-local'
+    $previousTamperedLogs = Join-Path (Join-Path $previousTamperedLocal 'hello-approval') 'logs'
+    $previousTampered = Invoke-Launcher -Launcher $previousLauncher -Agent $agent -Config $config -LocalAppData $previousTamperedLocal -LogDirectory $previousTamperedLogs
+    if ($previousTampered.ExitCode -eq 125 -and (($previousTampered.Output -join ' | ') -match 'validation module SHA-256 mismatch')) {
+        Pass 'previous-generation bundle rejects its tampered sibling module with exit 125'
+    } else {
+        Fail 'previous-generation bundle rejects its tampered sibling module with exit 125' ("rc={0} output={1}" -f $previousTampered.ExitCode,($previousTampered.Output -join ' | '))
+    }
+
     $staleSourceRoot = Join-Path $root 'stale-source-layout'
     [void][IO.Directory]::CreateDirectory($staleSourceRoot)
     $staleLauncher = New-SyntheticRepo -Root $staleSourceRoot

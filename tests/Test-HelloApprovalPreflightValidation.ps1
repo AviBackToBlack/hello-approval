@@ -68,7 +68,8 @@ function New-Fixture {
         [switch]$TrailingDotReleaseTag,
         [switch]$ReservedDeviceReleaseTag,
         [switch]$MissingDistribution,
-        [AllowNull()][string]$ReleaseTag
+        [AllowNull()][string]$ReleaseTag,
+        [AllowNull()][string]$PinnedAgentName
     )
 
     $tool=Join-Path $Root 'tool'
@@ -160,6 +161,10 @@ function New-Fixture {
     if($ReservedDeviceReleaseTag){$pin.upstream.release_tag='CON'}
     if($PSBoundParameters.ContainsKey('ReleaseTag')){$pin.upstream.release_tag=$ReleaseTag}
     if($MissingDistribution){[void]$pin.installation_policy.Remove('allowed_distribution')}
+    if($PSBoundParameters.ContainsKey('PinnedAgentName')){
+        $pin.files[1].name=$PinnedAgentName
+        $pin.installation_policy.installed_files=@('sshenc.exe',$PinnedAgentName)
+    }
     if(-not $PinMissing){
         $pinText=if($MalformedPinJson){'{ this is not valid json'}else{$pin|ConvertTo-Json -Depth 20}
         # Keep the pin ASCII so non-ASCII fixture tags survive the reader's default PS5.1 encoding.
@@ -302,6 +307,9 @@ try {
         [pscustomobject]@{Name='non-reserved CONSOLE release tag';Args=@{ReleaseTag='CONSOLE'};Kind='release-tag-accepted'},
         [pscustomobject]@{Name='non-reserved COM superscript-four release tag';Args=@{ReleaseTag=('COM'+[char]0x2074)};Kind='release-tag-accepted'},
         [pscustomobject]@{Name='missing allowed distribution';Args=@{MissingDistribution=$true};Kind='distribution-block'},
+        [pscustomobject]@{Name='Windows-invalid pinned file name before runtime install';Args=@{PinnedAgentName='a|b';RuntimeMissing=$true};Kind='policy-validation-block'},
+        [pscustomobject]@{Name='reserved-device pinned file name before runtime install';Args=@{PinnedAgentName='CON.exe';RuntimeMissing=$true};Kind='policy-validation-block'},
+        [pscustomobject]@{Name='trailing-dot pinned file name before runtime install';Args=@{PinnedAgentName='sshenc-agent.exe.';RuntimeMissing=$true};Kind='policy-validation-block'},
         [pscustomobject]@{Name='Bin case-only directory mismatch';Args=@{BinCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='runtime file case-only mismatch';Args=@{FileCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='hello-approval project-root junction';Args=@{ProjectRootThroughJunction=$true};Kind='runtime-delta'},
@@ -389,9 +397,10 @@ try {
             }
             continue
         }
-        if($case.Kind -in @('pin-parse-block','release-tag-block','distribution-block')){
+        if($case.Kind -in @('pin-parse-block','release-tag-block','distribution-block','policy-validation-block')){
             $expectedCheck=switch($case.Kind){
                 'pin-parse-block' {'pin.parse'}
+                'policy-validation-block' {'pin.policy.validation'}
                 'release-tag-block' {'pin.upstream.release-tag'}
                 'distribution-block' {'pin.policy.distribution'}
             }

@@ -85,6 +85,8 @@ function New-Fixture {
         [switch]$NonStringReleaseTag,
         [switch]$PinMissing,
         [switch]$NonObjectUpstream,
+        [switch]$PreviousGenerationLauncher,
+        [switch]$OmitCurrentLauncher,
         [AllowNull()][string]$ReleaseTag
     )
 
@@ -164,10 +166,31 @@ function New-Fixture {
         } else {
             $launcherBase = Join-Path $appRoot 'launcher'
         }
-        $launcherVersionRoot = Join-Path $launcherBase $launcherHash
-        [void][IO.Directory]::CreateDirectory($launcherVersionRoot)
-        Copy-Item -LiteralPath $sourceLauncher -Destination (Join-Path $launcherVersionRoot 'Start-HelloApprovalAgent.ps1') -Force
-        Copy-Item -LiteralPath $sourceValidationModule -Destination (Join-Path $launcherVersionRoot 'HelloApproval.Validation.psm1') -Force
+        if(-not $OmitCurrentLauncher){
+            $launcherVersionRoot = Join-Path $launcherBase $launcherHash
+            [void][IO.Directory]::CreateDirectory($launcherVersionRoot)
+            Copy-Item -LiteralPath $sourceLauncher -Destination (Join-Path $launcherVersionRoot 'Start-HelloApprovalAgent.ps1') -Force
+            Copy-Item -LiteralPath $sourceValidationModule -Destination (Join-Path $launcherVersionRoot 'HelloApproval.Validation.psm1') -Force
+        }
+        if($PreviousGenerationLauncher){
+            # An earlier bundle generation installed by a previous commit: different module bytes and a
+            # launcher whose single validation-module pin names them, in its own digest directory.
+            $utf8 = [Text.UTF8Encoding]::new($false)
+            $previousModuleText = [IO.File]::ReadAllText($sourceValidationModule) + "# previous-generation bundle test fixture`n"
+            $previousModuleHash = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($utf8.GetBytes($previousModuleText)))).Replace('-','').ToLowerInvariant()
+            $pinPattern = "(?m)^\`$ValidationModuleSha256 = '[a-f0-9]{64}'$"
+            $launcherText = [IO.File]::ReadAllText($sourceLauncher)
+            if([regex]::Matches($launcherText,$pinPattern).Count -ne 1){ throw 'Launcher must contain exactly one validation-module pin.' }
+            $previousLauncherText = [regex]::Replace($launcherText,$pinPattern,("`$ValidationModuleSha256 = '{0}'" -f $previousModuleHash))
+            $previousStage = Join-Path $Root 'previous-generation'
+            [void][IO.Directory]::CreateDirectory($previousStage)
+            [IO.File]::WriteAllText((Join-Path $previousStage 'Start-HelloApprovalAgent.ps1'),$previousLauncherText,$utf8)
+            [IO.File]::WriteAllText((Join-Path $previousStage 'HelloApproval.Validation.psm1'),$previousModuleText,$utf8)
+            $previousRoot = Join-Path $launcherBase (Get-FileSha256Local (Join-Path $previousStage 'Start-HelloApprovalAgent.ps1'))
+            [void][IO.Directory]::CreateDirectory($previousRoot)
+            Copy-Item -LiteralPath (Join-Path $previousStage 'Start-HelloApprovalAgent.ps1') -Destination $previousRoot
+            Copy-Item -LiteralPath (Join-Path $previousStage 'HelloApproval.Validation.psm1') -Destination $previousRoot
+        }
     }
 
     $runtimeBase = Join-Path (Join-Path $physicalProject 'runtime') 'sshenc'
@@ -330,6 +353,8 @@ try {
         [pscustomobject]@{Name='hello-approval project-root junction';Args=@{ProjectRootThroughJunction=$true};Kind='project-junction'},
         [pscustomobject]@{Name='project Git directory junction';Args=@{GitRootThroughJunction=$true};Kind='git-junction'},
         [pscustomobject]@{Name='launcher app directory junction';Args=@{LauncherAppThroughJunction=$true};Kind='launcher-junction'},
+        [pscustomobject]@{Name='existing install with only the previous bundle generation';Args=@{PreviousGenerationLauncher=$true;OmitCurrentLauncher=$true};Kind='launcher-upgrade-required'},
+        [pscustomobject]@{Name='upgraded install retaining the previous bundle generation';Args=@{PreviousGenerationLauncher=$true};Kind='launcher-retained-previous'},
         [pscustomobject]@{Name='signing public key through .ssh junction';Args=@{PublicKeyThroughJunction=$true};Kind='public-key-junction'},
         [pscustomobject]@{Name='malformed unused pin leaf name';Args=@{MalformedUnusedName=$true};Kind='pin-delta'},
         [pscustomobject]@{Name='malformed provenance JSON';Args=@{MalformedPinJson=$true};Kind='provenance-block';Check='pin.parse'},
@@ -477,6 +502,21 @@ try {
                     } else {
                         Fail 'hardened Doctor rejects project Git directory junction at every direct consumer' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
                     }
+                }
+            }
+            'launcher-upgrade-required' {
+                $missing = @($result.Json.findings | Where-Object { $_.severity -eq 'BLOCK' -and $_.check -eq 'launcher.cache' -and [string]$_.message -match 'bundle directory is missing' })
+                if($result.ExitCode -eq 2 -and $missing.Count -eq 1 -and -not (Has-Finding $result 'PASS' 'launcher.cache')){
+                    Pass 'Doctor reports a previous-generation-only install as launcher.cache upgrade-required BLOCK'
+                } else {
+                    Fail 'Doctor reports a previous-generation-only install as launcher.cache upgrade-required BLOCK' (($result.Json.findings | Where-Object { $_.check -like 'launcher.*' } | ConvertTo-Json -Depth 8) -join '')
+                }
+            }
+            'launcher-retained-previous' {
+                if(Has-Finding $result 'PASS' 'launcher.cache'){
+                    Pass 'Doctor accepts the current bundle while a previous generation is retained for rollback'
+                } else {
+                    Fail 'Doctor accepts the current bundle while a previous generation is retained for rollback' (($result.Json.findings | Where-Object { $_.check -like 'launcher.*' } | ConvertTo-Json -Depth 8) -join '')
                 }
             }
             'launcher-junction' {

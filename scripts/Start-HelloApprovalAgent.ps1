@@ -19,7 +19,7 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 # Bundle contract: keep the next pin assignment in this exact textual form; installer/Doctor/cleanup extract it literally.
-$ValidationModuleSha256 = '1b790cb30fa19ca7f73fdd511573d9a3b3d66b98a677309d33dcbc3db7949d1c'
+$ValidationModuleSha256 = 'c7396e1e00780044f87b270f4fb21c8bd6de22e6f2271bdf4f91f7597ba36b50'
 
 function Get-BootstrapFileSha256 {
     param([Parameter(Mandatory = $true)][string]$Path)
