@@ -301,7 +301,8 @@ function Add-GitTransportFinding {
     param(
         [Parameter(Mandatory = $true)][string]$Check,
         [Parameter(Mandatory = $true)][string]$Key,
-        [Parameter(Mandatory = $true)][object[]]$Values
+        # Absent keys arrive as @() (Get-GitAll) or $null (target -AllowAbsent); both mean PASS below.
+        [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyCollection()][object[]]$Values
     )
 
     $clean = @($Values | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
