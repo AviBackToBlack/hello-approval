@@ -55,7 +55,20 @@ function New-Fixture {
         [switch]$ValidationModuleMissing,
         [switch]$PinMissing,
         [switch]$MalformedSystemGitConfig,
-        [switch]$MalformedGlobalGitConfig
+        [switch]$MalformedGlobalGitConfig,
+        [switch]$MalformedPinJson,
+        [switch]$MissingUpstream,
+        [switch]$MissingReleaseTag,
+        [switch]$BlankReleaseTag,
+        [switch]$TraversalReleaseTag,
+        [switch]$IllegalCharReleaseTag,
+        [switch]$WildcardReleaseTag,
+        [switch]$DriveQualifiedReleaseTag,
+        [switch]$NonStringReleaseTag,
+        [switch]$TrailingDotReleaseTag,
+        [switch]$ReservedDeviceReleaseTag,
+        [switch]$MissingDistribution,
+        [AllowNull()][string]$ReleaseTag
     )
 
     $tool=Join-Path $Root 'tool'
@@ -135,8 +148,23 @@ function New-Fixture {
             installed_files=@('sshenc.exe','sshenc-agent.exe')
         }
     }
+    if($MissingUpstream){[void]$pin.Remove('upstream')}
+    if($MissingReleaseTag){[void]$pin.upstream.Remove('release_tag')}
+    if($BlankReleaseTag){$pin.upstream.release_tag='   '}
+    if($TraversalReleaseTag){$pin.upstream.release_tag='..\escape'}
+    if($IllegalCharReleaseTag){$pin.upstream.release_tag='a|b'}
+    if($WildcardReleaseTag){$pin.upstream.release_tag='v*test'}
+    if($DriveQualifiedReleaseTag){$pin.upstream.release_tag='C:'}
+    if($NonStringReleaseTag){$pin.upstream.release_tag=$true}
+    if($TrailingDotReleaseTag){$pin.upstream.release_tag='v-test.'}
+    if($ReservedDeviceReleaseTag){$pin.upstream.release_tag='CON'}
+    if($PSBoundParameters.ContainsKey('ReleaseTag')){$pin.upstream.release_tag=$ReleaseTag}
+    if($MissingDistribution){[void]$pin.installation_policy.Remove('allowed_distribution')}
     if(-not $PinMissing){
-        [IO.File]::WriteAllText((Join-Path $prov 'sshenc-v0.6.101.json'),($pin|ConvertTo-Json -Depth 20),[Text.UTF8Encoding]::new($false))
+        $pinText=if($MalformedPinJson){'{ this is not valid json'}else{$pin|ConvertTo-Json -Depth 20}
+        # Keep the pin ASCII so non-ASCII fixture tags survive the reader's default PS5.1 encoding.
+        $pinText=[regex]::Replace($pinText,'[^\x00-\x7F]',{param($m) '\u{0:X4}' -f [int][char]$m.Value})
+        [IO.File]::WriteAllText((Join-Path $prov 'sshenc-v0.6.101.json'),$pinText,[Text.UTF8Encoding]::new($false))
     }
     if($RuntimeMissing){
         Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
@@ -248,6 +276,32 @@ try {
         [pscustomobject]@{Name='missing provenance pin';Args=@{PinMissing=$true};Kind='required-structured-block'},
         [pscustomobject]@{Name='unreadable system Git config';Args=@{MalformedSystemGitConfig=$true};Kind='git-scope-unreadable';Scope='system'},
         [pscustomobject]@{Name='unreadable global Git config';Args=@{MalformedGlobalGitConfig=$true};Kind='git-scope-unreadable';Scope='global'},
+        [pscustomobject]@{Name='malformed provenance JSON';Args=@{MalformedPinJson=$true};Kind='pin-parse-block'},
+        [pscustomobject]@{Name='missing upstream object';Args=@{MissingUpstream=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='missing upstream release tag';Args=@{MissingReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='blank upstream release tag';Args=@{BlankReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='traversal upstream release tag';Args=@{TraversalReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='illegal-character upstream release tag';Args=@{IllegalCharReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='wildcard upstream release tag';Args=@{WildcardReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='drive-qualified upstream release tag';Args=@{DriveQualifiedReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='non-string upstream release tag';Args=@{NonStringReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='trailing-dot upstream release tag';Args=@{TrailingDotReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device upstream release tag';Args=@{ReservedDeviceReleaseTag=$true};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device COM0 release tag';Args=@{ReleaseTag='COM0'};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device LPT0 release tag';Args=@{ReleaseTag='lpt0'};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device COM superscript-one release tag';Args=@{ReleaseTag=('COM'+[char]0x00B9)};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device LPT superscript-three release tag';Args=@{ReleaseTag=('LPT'+[char]0x00B3)};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device CONIN$ release tag';Args=@{ReleaseTag='CONIN$'};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device CONOUT$ with extension release tag';Args=@{ReleaseTag='conout$.log'};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device CLOCK$ release tag';Args=@{ReleaseTag='CLOCK$'};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device NUL with extension release tag';Args=@{ReleaseTag='NUL.tar.gz'};Kind='release-tag-block'},
+        [pscustomobject]@{Name='reserved-device NUL with space before extension release tag';Args=@{ReleaseTag='NUL .txt'};Kind='release-tag-block'},
+        [pscustomobject]@{Name='overlong-component release tag';Args=@{ReleaseTag=('v'+('x'*255))};Kind='release-tag-block'},
+        [pscustomobject]@{Name='MAX_PATH-exceeding composed runtime path release tag';Args=@{ReleaseTag=('v'+('x'*199))};Kind='release-tag-block'},
+        [pscustomobject]@{Name='non-reserved COM10 release tag';Args=@{ReleaseTag='COM10'};Kind='release-tag-accepted'},
+        [pscustomobject]@{Name='non-reserved CONSOLE release tag';Args=@{ReleaseTag='CONSOLE'};Kind='release-tag-accepted'},
+        [pscustomobject]@{Name='non-reserved COM superscript-four release tag';Args=@{ReleaseTag=('COM'+[char]0x2074)};Kind='release-tag-accepted'},
+        [pscustomobject]@{Name='missing allowed distribution';Args=@{MissingDistribution=$true};Kind='distribution-block'},
         [pscustomobject]@{Name='Bin case-only directory mismatch';Args=@{BinCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='runtime file case-only mismatch';Args=@{FileCaseMismatch=$true};Kind='runtime-delta'},
         [pscustomobject]@{Name='hello-approval project-root junction';Args=@{ProjectRootThroughJunction=$true};Kind='runtime-delta'},
@@ -335,6 +389,32 @@ try {
             }
             continue
         }
+        if($case.Kind -in @('pin-parse-block','release-tag-block','distribution-block')){
+            $expectedCheck=switch($case.Kind){
+                'pin-parse-block' {'pin.parse'}
+                'release-tag-block' {'pin.upstream.release-tag'}
+                'distribution-block' {'pin.policy.distribution'}
+            }
+            $findingCount=@($result.Json.findings | Where-Object { $_.severity -eq 'BLOCK' -and $_.check -eq $expectedCheck }).Count
+            if((Is-StructuredBlockedResult $result) -and $findingCount -eq 1){
+                Pass ('{0} returns named structured BLOCK ({1})' -f $case.Name,$expectedCheck)
+            } else {
+                Fail ('{0} returns named structured BLOCK ({1})' -f $case.Name,$expectedCheck) ('rc={0} blocked={1} findings={2}' -f $result.ExitCode,$result.Json.blocked,(($result.Json.findings | ConvertTo-Json -Depth 8) -join ''))
+            }
+            continue
+        }
+
+        if($case.Kind -eq 'release-tag-accepted'){
+            $tagBlocks=@($result.Json.findings | Where-Object { $_.severity -eq 'BLOCK' -and $_.check -eq 'pin.upstream.release-tag' }).Count
+            $tagPasses=@($result.Json.findings | Where-Object { $_.severity -eq 'PASS' -and $_.check -eq 'pin.upstream.release-tag' }).Count
+            if([string]$result.Json.schema -ceq 'hello-approval/preflight/v1' -and $tagBlocks -eq 0 -and $tagPasses -eq 1){
+                Pass ('{0} is accepted as a runtime path segment' -f $case.Name)
+            } else {
+                Fail ('{0} is accepted as a runtime path segment' -f $case.Name) ('rc={0} blocked={1} findings={2}' -f $result.ExitCode,$result.Json.blocked,(($result.Json.findings | ConvertTo-Json -Depth 8) -join ''))
+            }
+            continue
+        }
+
         if($case.Kind -eq 'runtime-delta'){
             if($ExpectedPhase1){
                 if(-not (Has-RuntimeBlock $result)){
