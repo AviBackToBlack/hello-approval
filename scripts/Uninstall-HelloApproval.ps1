@@ -15,6 +15,26 @@ $SigningSchema = 'hello-approval/ha-1.4/v1'
 $VerificationSchema = 'hello-approval/ha-1.5/v1'
 $TrustMarker = "# $VerificationSchema"
 
+function Test-UninstallReleaseTag {
+    param(
+        [AllowNull()][object]$Value
+    )
+
+    if ($null -eq $Value -or -not ($Value -is [string])) { return $false }
+    $name = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+    if ($name -ceq '.' -or $name -ceq '..') { return $false }
+    if ($name.Length -gt 255) { return $false }
+    if ($name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) { return $false }
+    if ([IO.Path]::IsPathRooted($name)) { return $false }
+    if ($name.EndsWith('.') -or $name.EndsWith(' ')) { return $false }
+    # Union of reserved DOS device names across supported Windows releases (newer builds
+    # reserve fewer names in full paths), including superscript COM/LPT digits, console
+    # pseudo-devices, and the legacy "NAME .ext" form whose base trims trailing spaces.
+    if ($name -match '^(?i:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|CLOCK\$|(?:COM|LPT)[0-9\u00B9\u00B2\u00B3]) *(?:\..*)?$') { return $false }
+    return $true
+}
+
 function Resolve-HelloApprovalGitExecutable {
     # Normal PowerShell application resolution: the first git.exe in PATH order wins (a git.cmd or
     # git.bat shim is not preferred). Several Git installations on PATH are not an error. Callers
@@ -235,7 +255,13 @@ $launcherRoot = Join-Path $projectRoot 'app\launcher'
 $pinPath = Join-Path $repoRoot 'provenance\sshenc-v0.6.101.json'
 $pin = Get-Content -LiteralPath $pinPath -Raw | ConvertFrom-Json
 [void](Assert-HelloApprovalPinPolicy -Pin $pin)
-$releaseTag = [string]$pin.upstream.release_tag
+$upstreamProperty = $pin.PSObject.Properties['upstream']
+$releaseTagProperty = if ($null -eq $upstreamProperty -or -not ($upstreamProperty.Value -is [pscustomobject])) { $null } else { $upstreamProperty.Value.PSObject.Properties['release_tag'] }
+$releaseTagValue = if ($null -eq $releaseTagProperty) { $null } else { $releaseTagProperty.Value }
+if (-not (Test-UninstallReleaseTag -Value $releaseTagValue)) {
+    throw 'Refusing cleanup because pinned upstream.release_tag is missing, non-string, or not a usable Windows runtime path segment.'
+}
+$releaseTag = [string]$releaseTagValue
 $runtimeRoot = Join-Path $projectRoot ("runtime\sshenc\{0}" -f $releaseTag)
 
 $git = Resolve-HelloApprovalGitExecutable
