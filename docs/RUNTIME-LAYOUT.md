@@ -212,6 +212,8 @@ The script:
 
 It deliberately has no "latest" lookup and no package-manager mode.
 
+The runtime version directory name comes from the caller-owned `upstream.release_tag`. The runtime, Scheduled Task and Git config installers each require it to be a JSON string that is a usable single Windows path component, without relying on preflight having run first. The check rejects separators and traversal (`.`, `..`), invalid filename characters and wildcards, rooted or drive-qualified forms, trailing dot or space, reserved device names (including `COM0`-`COM9`/`LPT0`-`LPT9` with superscript digits, `CONIN$`, `CONOUT$` and `CLOCK$`), and components over 255 characters. It also requires every pinned runtime file path (`<runtime root>\bin\<installed file>`) to fit in MAX_PATH (259 characters), because runtime consumers such as Git's `gpg.ssh.program` and Scheduled Task actions are not guaranteed to be long-path aware. The runtime installer applies the same bound to its sibling `.<tag>.staging.<32 hex>` staging directory, which is 42 characters longer, and also requires that staging component to stay within 255 characters. The component checks run immediately after the shared pin-policy assertion and before any runtime path is constructed; the MAX_PATH check runs on the composed paths. Both run before any mutation. The installers refuse with a terminating error. Running preflight first is not required.
+
 ## 9. Config installation policy
 
 HA-1.1 ships an example rather than silently overwriting the upstream-resolved sshenc config path.
