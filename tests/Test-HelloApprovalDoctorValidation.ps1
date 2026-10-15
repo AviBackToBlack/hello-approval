@@ -87,6 +87,8 @@ function New-Fixture {
         [switch]$NonObjectUpstream,
         [switch]$PreviousGenerationLauncher,
         [switch]$OmitCurrentLauncher,
+        [switch]$TargetRepo,
+        [switch]$TransportKeysSet,
         [AllowNull()][string]$ReleaseTag,
         [AllowNull()][string]$PinnedAgentName
     )
@@ -269,12 +271,33 @@ function New-Fixture {
         Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
     }
 
+    # Both Git config scopes are fixture files; they stay absent unless a case writes them, so
+    # core.sshCommand/core.sshVariant are absent there exactly as on a correctly configured host.
+    $globalConfig = Join-Path $Root 'global.gitconfig'
+    $systemConfig = Join-Path $Root 'system.gitconfig'
+    if($TransportKeysSet){
+        $utf8 = [Text.UTF8Encoding]::new($false)
+        $nl = [Environment]::NewLine
+        [IO.File]::WriteAllText($globalConfig,('[core]' + $nl + '    sshCommand = C:/fixture/sshenc.exe -v' + $nl + '    sshVariant = ssh' + $nl),$utf8)
+        [IO.File]::WriteAllText($systemConfig,('[core]' + $nl + '    sshCommand = ssh -o BatchMode=yes' + $nl),$utf8)
+    }
+
+    $repo = $null
+    if($TargetRepo){
+        $repo = Join-Path $Root 'repo'
+        $gitExe = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+        & $gitExe init -q $repo
+        if($LASTEXITCODE -ne 0){ throw "git init failed for fixture repository: $repo" }
+    }
+
     return [pscustomobject]@{
         Doctor = Join-Path $scripts 'Test-HelloApprovalDoctor.ps1'
         LocalAppData = $local
         AppData = $app
         UserProfile = $profile
-        GlobalConfig = Join-Path $Root 'global.gitconfig'
+        GlobalConfig = $globalConfig
+        SystemConfig = $systemConfig
+        Repo = $repo
     }
 }
 
@@ -287,6 +310,7 @@ function Invoke-Doctor {
     $oldHome=$env:HOME
     $oldGlobal=$env:GIT_CONFIG_GLOBAL
     $oldNoSystem=$env:GIT_CONFIG_NOSYSTEM
+    $oldSystem=$env:GIT_CONFIG_SYSTEM
     try {
         $env:LOCALAPPDATA=$Fixture.LocalAppData
         $env:APPDATA=$Fixture.AppData
@@ -294,11 +318,16 @@ function Invoke-Doctor {
         $env:HOME=$Fixture.UserProfile
         $env:GIT_CONFIG_GLOBAL=$Fixture.GlobalConfig
         $env:GIT_CONFIG_NOSYSTEM='1'
+        # GIT_CONFIG_NOSYSTEM does not stop Doctor's explicit `git config --system` reads, so point the
+        # system scope at a fixture file too; otherwise git.system.* findings depend on the host.
+        $env:GIT_CONFIG_SYSTEM=$Fixture.SystemConfig
 
+        $doctorArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',$Fixture.Doctor,'-Json')
+        if($null -ne $Fixture.Repo){ $doctorArgs+=@('-Repo',$Fixture.Repo) }
         $saved=$ErrorActionPreference
         try {
             $ErrorActionPreference='Continue'
-            $out=@(& $ps51 -NoProfile -ExecutionPolicy Bypass -File $Fixture.Doctor -Json 2>$null | ForEach-Object {[string]$_})
+            $out=@(& $ps51 @doctorArgs 2>$null | ForEach-Object {[string]$_})
             $rc=$LASTEXITCODE
         } finally {
             $ErrorActionPreference=$saved
@@ -326,6 +355,7 @@ function Invoke-Doctor {
         if($null -eq $oldHome){Remove-Item Env:HOME -ErrorAction SilentlyContinue}else{$env:HOME=$oldHome}
         if($null -eq $oldGlobal){Remove-Item Env:GIT_CONFIG_GLOBAL -ErrorAction SilentlyContinue}else{$env:GIT_CONFIG_GLOBAL=$oldGlobal}
         if($null -eq $oldNoSystem){Remove-Item Env:GIT_CONFIG_NOSYSTEM -ErrorAction SilentlyContinue}else{$env:GIT_CONFIG_NOSYSTEM=$oldNoSystem}
+        if($null -eq $oldSystem){Remove-Item Env:GIT_CONFIG_SYSTEM -ErrorAction SilentlyContinue}else{$env:GIT_CONFIG_SYSTEM=$oldSystem}
     }
 }
 
@@ -345,12 +375,33 @@ function Has-DoctorInternal($Result) {
     return Has-Finding $Result 'BLOCK' 'doctor.internal'
 }
 
+# Returns the checks among $Expected (check -> severity) that do not have exactly one finding of that severity.
+function Get-SeverityMismatches($Result,[Collections.IDictionary]$Expected) {
+    $mismatches = @()
+    foreach($check in $Expected.Keys){
+        $severities = @($Result.Json.findings | Where-Object { $_.check -eq $check } | ForEach-Object { [string]$_.severity })
+        if($severities.Count -ne 1 -or $severities[0] -ne $Expected[$check]){
+            $mismatches += ('{0} expected {1} got [{2}]' -f $check,$Expected[$check],($severities -join ','))
+        }
+    }
+    return ,$mismatches
+}
+
+$absentTransportPass = [ordered]@{
+    'git.system.core.sshCommand' = 'PASS'
+    'git.system.core.sshVariant' = 'PASS'
+    'git.global.core.sshCommand' = 'PASS'
+    'git.global.core.sshVariant' = 'PASS'
+}
+
 $root=Join-Path ([IO.Path]::GetTempPath()) ('hello-approval-doctor-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($root)
 
 try {
     $cases=@(
         [pscustomobject]@{Name='exact direct surfaces';Args=@{};Kind='exact'},
+        [pscustomobject]@{Name='target repository without transport overrides';Args=@{TargetRepo=$true};Kind='target-transport-absent'},
+        [pscustomobject]@{Name='configured system/global transport keys';Args=@{TransportKeysSet=$true};Kind='transport-configured'},
         [pscustomobject]@{Name='missing validation module';Args=@{ValidationModuleMissing=$true};Kind='module-missing'},
         [pscustomobject]@{Name='missing runtime';Args=@{RuntimeMissing=$true};Kind='missing-runtime'},
         [pscustomobject]@{Name='Bin case-only directory mismatch';Args=@{BinCaseMismatch=$true};Kind='runtime-delta'},
@@ -431,6 +482,39 @@ try {
                     Pass 'exact direct runtime/trust/public-key/launcher/Git surfaces retain PASS findings'
                 } else {
                     Fail 'exact direct runtime/trust/public-key/launcher/Git surfaces retain PASS findings' (($result.Json.findings | ConvertTo-Json -Depth 8) -join '')
+                }
+                $transportMismatches = Get-SeverityMismatches $result $absentTransportPass
+                if($transportMismatches.Count -eq 0){
+                    Pass 'absent system/global core.sshCommand and core.sshVariant are PASS, not BLOCK'
+                } else {
+                    Fail 'absent system/global core.sshCommand and core.sshVariant are PASS, not BLOCK' (($transportMismatches -join '; ') + ' findings=' + (($result.Json.findings | Where-Object { [string]$_.check -like 'git.*.core.ssh*' } | ConvertTo-Json -Depth 8) -join ''))
+                }
+            }
+            'target-transport-absent' {
+                $label = 'absent target-repository core.sshCommand and core.sshVariant are PASS without a git.target BLOCK'
+                $transportMismatches = Get-SeverityMismatches $result ([ordered]@{
+                    'git.target.core.sshCommand' = 'PASS'
+                    'git.target.core.sshVariant' = 'PASS'
+                })
+                if($transportMismatches.Count -eq 0 -and -not (Has-Finding $result 'BLOCK' 'git.target')){
+                    Pass $label
+                } else {
+                    Fail $label (($transportMismatches -join '; ') + ' findings=' + (($result.Json.findings | Where-Object { [string]$_.check -like 'git.target*' } | ConvertTo-Json -Depth 8) -join ''))
+                }
+            }
+            'transport-configured' {
+                $label = 'configured system/global transport keys keep BLOCK for sshenc and WARN for unrelated values'
+                $transportMismatches = Get-SeverityMismatches $result ([ordered]@{
+                    'git.system.core.sshCommand' = 'WARN'
+                    'git.system.core.sshVariant' = 'PASS'
+                    'git.global.core.sshCommand' = 'BLOCK'
+                    'git.global.core.sshVariant' = 'WARN'
+                })
+                $isolation = @($result.Json.findings | Where-Object { $_.check -eq 'git.global.core.sshCommand' -and [string]$_.message -like '*transport isolation*' }).Count
+                if($transportMismatches.Count -eq 0 -and $isolation -eq 1){
+                    Pass $label
+                } else {
+                    Fail $label (($transportMismatches -join '; ') + ' findings=' + (($result.Json.findings | Where-Object { [string]$_.check -like 'git.*.core.ssh*' } | ConvertTo-Json -Depth 8) -join ''))
                 }
             }
             'module-missing' {
