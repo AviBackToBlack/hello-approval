@@ -120,11 +120,11 @@ function Register-ScheduledTask {
     throw 'HELLO_APPROVAL_TEST_REGISTRATION_BOUNDARY'
 }
 
-# Interlock: every mutating Task Scheduler command must resolve to a stub defined above, both now and
-# after the real module's builders have been exercised, or the target is never run.
-$mutating = @('Register-ScheduledTask', 'Unregister-ScheduledTask', 'Stop-ScheduledTask', 'Start-ScheduledTask', 'Disable-ScheduledTask', 'Enable-ScheduledTask', 'Set-ScheduledTask', 'Get-ScheduledTask', 'Export-ScheduledTask')
+# Interlock: every stubbed Task Scheduler command (mutating and read-only) must resolve to a stub defined
+# above, both now and after the real module's builders have been exercised, or the target is never run.
+$stubbedCommands = @('Register-ScheduledTask', 'Unregister-ScheduledTask', 'Stop-ScheduledTask', 'Start-ScheduledTask', 'Disable-ScheduledTask', 'Enable-ScheduledTask', 'Set-ScheduledTask', 'Get-ScheduledTask', 'Get-ScheduledTaskInfo', 'Export-ScheduledTask')
 $null = New-ScheduledTaskAction -Execute 'cmd.exe'
-foreach ($commandName in $mutating) {
+foreach ($commandName in $stubbedCommands) {
     $resolved = Get-Command -Name $commandName -ErrorAction Stop
     if ($resolved.CommandType -ne 'Function' -or -not [string]::IsNullOrEmpty($resolved.Source)) {
         throw "Task Scheduler stub interlock: $commandName resolves to '$($resolved.Source)' instead of the test stub."
