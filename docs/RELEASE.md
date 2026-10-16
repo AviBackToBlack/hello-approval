@@ -100,7 +100,13 @@ The release tag is created on the signing host with the existing Windows Hello-b
 
    This requires `verified: true` and `reason: valid`.
 
-If verification fails at step 3 or 5, delete only the unpublished local tag (`git tag -d v0.1.0`) and investigate. Once a tag has been pushed, it is not re-pointed; any correction is a new version.
+What to do when verification fails depends on whether the tag has been pushed:
+
+- **Step 3 fails (the tag is not pushed yet).** First rule out verifier selection and trust configuration (see step 3). If verification still genuinely fails, you may delete the unpublished local tag (`git tag -d v0.1.0`) and investigate before trying again.
+- **Step 5 fails (step 4 has already pushed `refs/tags/v0.1.0`, so the tag is published).**
+  - Stop the release and do not publish the GitHub Release.
+  - Leave the remote tag exactly as it is, and investigate the failure.
+  - Do not delete, force-update or replace the published tag without a separate maintainer decision. If the tag has to be abandoned, release a new version instead.
 
 ## 4. GitHub Release
 
