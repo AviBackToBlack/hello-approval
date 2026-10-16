@@ -2,6 +2,15 @@
 
 The implementation is intentionally sliced into small reviewable changes. No phase implies permission to auto-merge.
 
+## Status at 0.1.0
+
+- **Phases 0 and 1: complete.** These are the Git signing reference integration released as `0.1.0` ([CHANGELOG.md](CHANGELOG.md)).
+- **Phase 2: partial.**
+  - Done: Windows PowerShell 5.1 acceptance CI, `-WhatIf` coverage, failure-injection and rollback tests, the shared validation module, and the content-addressed launcher upgrade path.
+  - Not done: PowerShell static analysis in CI.
+  - Open hardening: #9, #35, #37 and #49.
+- **Phases 3 and 4: not started.** Each needs a design issue and a deliberate decision to leave maintenance-only mode ([docs/RELEASE.md](docs/RELEASE.md#5-maintenance-only-mode-after-010)).
+
 ## Phase 0 — Foundation
 
 ### HA-0.1: Scope and architecture
