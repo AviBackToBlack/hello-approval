@@ -103,6 +103,7 @@ The release tag is created on the signing host with the existing Windows Hello-b
 What to do when verification fails depends on whether the tag has been pushed:
 
 - **Step 3 fails (the tag is not pushed yet).** First rule out verifier selection and trust configuration (see step 3). If verification still genuinely fails, you may delete the unpublished local tag (`git tag -d v0.1.0`) and investigate before trying again.
+- **Step 4 push is rejected** (for example, `already exists`). Check whether the tag already exists on origin (`git ls-remote origin refs/tags/v0.1.0`) before treating your local tag as unpublished. If origin already has `refs/tags/v0.1.0`, treat it as published and follow the step-5 rules below. Never force-push a tag.
 - **Step 5 fails (step 4 has already pushed `refs/tags/v0.1.0`, so the tag is published).**
   - Stop the release and do not publish the GitHub Release.
   - Leave the remote tag exactly as it is, and investigate the failure.
