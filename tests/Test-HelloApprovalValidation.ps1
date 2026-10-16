@@ -482,7 +482,7 @@ try {
     # that way silently never fires (it once made the stubbed-run safety net vacuous).
     Invoke-PassCase 'no Scheduled Task query uses an empty -TaskPath' {
         $emptyPaths = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'scripts'), (Join-Path $repoRoot 'tests') -Recurse -Filter '*.ps1' -File |
-            Select-String -Pattern "-TaskPath\s+(''|`"`")" |
+            Select-String -Pattern "-TaskPath(\s+|\s*:\s*)(''|`"`")" |
             ForEach-Object { '{0}:{1}' -f $_.Filename, $_.LineNumber })
         if ($emptyPaths.Count -ne 0) { throw ('empty -TaskPath: ' + ($emptyPaths -join ', ')) }
     }
