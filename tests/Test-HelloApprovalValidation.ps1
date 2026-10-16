@@ -462,8 +462,13 @@ try {
             foreach ($line in [IO.File]::ReadAllLines((Join-Path (Join-Path $repoRoot 'scripts') $scriptName))) {
                 $lineNumber++
                 if ($line -notmatch '\$TaskMarker\b') { continue }
-                foreach ($m in [regex]::Matches($line, '(?i)\s-(?<op>[ci]?(?:eq|ne))\s')) {
+                # Any comparison form on a marker line counts, with or without surrounding whitespace;
+                # only -ceq/-cne are accepted, so .Equals()/-like/-match/-in/... cannot slip past the count.
+                foreach ($m in [regex]::Matches($line, '(?i)-(?<op>[ci]?(?:eq|ne|like|notlike|match|notmatch|contains|notcontains|in|notin))(?![A-Za-z])')) {
                     [pscustomobject]@{ Site = '{0}:{1}' -f $scriptName, $lineNumber; Op = $m.Groups['op'].Value.ToLowerInvariant() }
+                }
+                foreach ($m in [regex]::Matches($line, '(?i)(?<op>\.Equals\(|\[string\]::(?:Equals|Compare)\()')) {
+                    [pscustomobject]@{ Site = '{0}:{1}' -f $scriptName, $lineNumber; Op = $m.Groups['op'].Value }
                 }
             }
         })
@@ -471,6 +476,15 @@ try {
         if ($comparisons.Count -ne 6 -or $inexact.Count -ne 0) {
             throw ('comparisons={0} inexact=[{1}]' -f $comparisons.Count, (($inexact | ForEach-Object { '{0} -{1}' -f $_.Site, $_.Op }) -join ', '))
         }
+    }
+
+    # Root-folder tasks have TaskPath '\'. An empty -TaskPath matches nothing, so a real-task query written
+    # that way silently never fires (it once made the stubbed-run safety net vacuous).
+    Invoke-PassCase 'no Scheduled Task query uses an empty -TaskPath' {
+        $emptyPaths = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'scripts'), (Join-Path $repoRoot 'tests') -Recurse -Filter '*.ps1' -File |
+            Select-String -Pattern "-TaskPath\s+(''|`"`")" |
+            ForEach-Object { '{0}:{1}' -f $_.Filename, $_.LineNumber })
+        if ($emptyPaths.Count -ne 0) { throw ('empty -TaskPath: ' + ($emptyPaths -join ', ')) }
     }
 
     # Callers must consume the shared predicate instead of carrying private copies.

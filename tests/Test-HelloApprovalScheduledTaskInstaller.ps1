@@ -451,7 +451,7 @@ function Test-BundleSentinelTime {
 
 function Assert-NoRealHelloApprovalTask([string]$When) {
     # Safety net for stubbed runs: the real Task Scheduler must never hold the hello-approval task.
-    if ($null -ne (ScheduledTasks\Get-ScheduledTask -TaskName 'hello-approval Git Signing Agent' -TaskPath '' -ErrorAction SilentlyContinue)) {
+    if ($null -ne (ScheduledTasks\Get-ScheduledTask -TaskName 'hello-approval Git Signing Agent' -TaskPath '\' -ErrorAction SilentlyContinue)) {
         throw "SAFETY: a real hello-approval Scheduled Task exists $When a stubbed run; aborting."
     }
 }
