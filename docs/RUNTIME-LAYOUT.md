@@ -98,13 +98,19 @@ The pipe name is deliberately Git-reference-specific for v0.1. Future approval i
 
 ### Dedicated label
 
-The only v0.1 label exposed by the signing agent is:
+The signing agent exposes **exactly one** label: the label of the sshenc credential whose public key is the canonical signing key `%USERPROFILE%\.ssh\github-signing.pub`. The default, and the label used by the reference setup, is:
 
 `github-signing`
 
-This matters because upstream `allowed_labels = []` means **no filter / expose all labels**. An empty list is therefore fail-open for this project's purpose and is not an acceptable production configuration.
+A host whose existing, already-registered credential carries another label (for example a per-host `github-signing-<host>`) keeps that credential; no key rotation is required. The Scheduled Task installer derives the expected label instead of hard-coding it:
 
-Upstream validates labels as 1–64 ASCII alphanumeric / hyphen / underscore characters. `github-signing` is within that contract.
+1. It computes the OpenSSH SHA256 fingerprint of `github-signing.pub`. That file must be a single-line `sk-ecdsa-sha2-nistp256@openssh.com` key under the trusted `USERPROFILE` boundary, the same contract the Git signing and local-verification installers use.
+2. It runs the pinned `sshenc.exe list --json` (read-only) and requires **exactly one** credential whose `fingerprint_sha256` equals that fingerprint. Zero or several matches, a failing command, or output that is not a credential array all refuse installation.
+3. That credential's label must be a valid upstream label (1–64 ASCII alphanumeric, hyphen or underscore characters), and the effective `allowed_labels` must be exactly that one label, compared case-sensitively.
+
+The label is therefore bound to the key Git trusts, not to a name. A credential that is merely *named* `github-signing` but holds another key does not satisfy the check.
+
+This matters because upstream `allowed_labels = []` means **no filter / expose all labels**. An empty list is therefore fail-open for this project's purpose and is not an acceptable production configuration. Two or more labels are refused for the same reason.
 
 ### Prompt policy
 
@@ -121,6 +127,8 @@ With label `github-signing`, upstream `sshenc keygen --strong --label github-sig
 `%USERPROFILE%\.ssh\github-signing.pub`
 
 Only the public key is written there. The WebAuthn credential's private signing material is not materialized as a conventional private-key file.
+
+A credential created under another label writes `%USERPROFILE%\.ssh\<label>.pub` instead. Copy that public key to `github-signing.pub` (public data only). Upstream `sshenc -Y sign` selects the credential by the public-key blob in the `-f` file, not by its file name, so Git signing through `github-signing.pub` uses the same credential.
 
 Credential generation remains an explicit/manual acceptance operation and is not performed by HA-1.1 automation.
 
@@ -230,7 +238,7 @@ HA-1.1 is complete when review establishes that:
 - the installed binary surface is exactly the pinned required surface;
 - archive and file hashes gate installation;
 - no package-manager/upstream integration command is used;
-- the config exposes exactly `github-signing` on the dedicated pipe;
+- the config exposes exactly one label on the dedicated pipe: the label of the credential whose public key is the canonical `github-signing.pub` (`github-signing` by default);
 - `SSHENC_AGENT_SOCKET` override risk is detected;
 - stock SSH transport state is observed but never mutated;
 - the future agent invocation contract explicitly supplies `--socket`;

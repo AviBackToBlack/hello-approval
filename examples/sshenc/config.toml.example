@@ -7,7 +7,9 @@
 socket_path = '\\.\pipe\sshenc-github-signing'
 
 # IMPORTANT: upstream treats an empty allowed_labels array as "allow all".
-# Keep the v0.1 signing agent restricted to the dedicated signing credential.
+# Keep the v0.1 signing agent restricted to the dedicated signing credential:
+# exactly one label, the label of the credential whose public key is
+# ~/.ssh/github-signing.pub (github-signing unless that key has another label).
 allowed_labels = ["github-signing"]
 
 # The v0.1 credential is an SK/WebAuthn key, whose signing path always requires
