@@ -237,7 +237,7 @@ function Test-TaskMatchesDesired {
     $hidden = Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Settings/t:Hidden'
 
     $checks = @(
-        ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:RegistrationInfo/t:Description') -eq $TaskMarker),
+        ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:RegistrationInfo/t:Description') -ceq $TaskMarker),
         ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Principals/t:Principal/t:UserId') -eq $ExpectedSid),
         ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Principals/t:Principal/t:LogonType') -eq 'InteractiveToken'),
         (($null -eq $runLevel) -or $runLevel -eq 'LeastPrivilege'),
@@ -606,7 +606,7 @@ try {
             $xml = Get-TaskXml
             $ns = New-TaskNamespaceManager -Xml $xml
             $description = Get-XmlText -Xml $xml -Ns $ns -XPath '/t:Task/t:RegistrationInfo/t:Description'
-            if ($description -ne $TaskMarker) {
+            if ($description -cne $TaskMarker) {
                 Add-Finding -Severity 'BLOCK' -Check 'task.ownership' -Message 'Same-name Scheduled Task is not owned by hello-approval.' -Value $description
             } else {
                 $taskOwned = $true
