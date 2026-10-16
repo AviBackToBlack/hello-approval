@@ -452,6 +452,27 @@ try {
         [void](Assert-HelloApprovalPinPolicy -Pin $p)
     }
 
+    # #40: the Scheduled Task ownership marker is an ownership boundary and must be compared exactly at
+    # every site, including the critical-definition comparisons that behavioral tests cannot reach once
+    # ownership is refused first.
+    Invoke-PassCase 'every Scheduled Task ownership-marker comparison is case-exact' {
+        $markerScripts = @('Install-HelloApprovalScheduledTask.ps1', 'Test-HelloApprovalDoctor.ps1', 'Uninstall-HelloApproval.ps1', 'Uninstall-HelloApprovalScheduledTask.ps1')
+        $comparisons = @(foreach ($scriptName in $markerScripts) {
+            $lineNumber = 0
+            foreach ($line in [IO.File]::ReadAllLines((Join-Path (Join-Path $repoRoot 'scripts') $scriptName))) {
+                $lineNumber++
+                if ($line -notmatch '\$TaskMarker\b') { continue }
+                foreach ($m in [regex]::Matches($line, '(?i)\s-(?<op>[ci]?(?:eq|ne))\s')) {
+                    [pscustomobject]@{ Site = '{0}:{1}' -f $scriptName, $lineNumber; Op = $m.Groups['op'].Value.ToLowerInvariant() }
+                }
+            }
+        })
+        $inexact = @($comparisons | Where-Object { $_.Op -notin @('ceq', 'cne') })
+        if ($comparisons.Count -ne 6 -or $inexact.Count -ne 0) {
+            throw ('comparisons={0} inexact=[{1}]' -f $comparisons.Count, (($inexact | ForEach-Object { '{0} -{1}' -f $_.Site, $_.Op }) -join ', '))
+        }
+    }
+
     # Callers must consume the shared predicate instead of carrying private copies.
     Invoke-PassCase 'no caller-owned file-name component predicate copies remain' {
         $copies = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'scripts') -Filter '*.ps1' -File |

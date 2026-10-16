@@ -270,7 +270,7 @@ function Assert-OwnedTask {
     param([Parameter(Mandatory = $true)][xml]$Xml)
     $ns = New-TaskNamespaceManager -Xml $Xml
     $description = Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:RegistrationInfo/t:Description'
-    if ($description -ne $TaskMarker) {
+    if ($description -cne $TaskMarker) {
         throw "Refusing to replace foreign task '$TaskPath$TaskName'; ownership marker is '$description'."
     }
 }
@@ -300,7 +300,7 @@ function Test-TaskMatchesDesired {
     $triggerEnabled = Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Triggers/t:LogonTrigger/t:Enabled'
     $hidden = Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Settings/t:Hidden'
     $checks = @(
-        ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:RegistrationInfo/t:Description') -eq $TaskMarker),
+        ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:RegistrationInfo/t:Description') -ceq $TaskMarker),
         ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Principals/t:Principal/t:UserId') -eq $ExpectedSid),
         ((Get-XmlText -Xml $Xml -Ns $ns -XPath '/t:Task/t:Principals/t:Principal/t:LogonType') -eq 'InteractiveToken'),
         (($null -eq $runLevel) -or $runLevel -eq 'LeastPrivilege'),

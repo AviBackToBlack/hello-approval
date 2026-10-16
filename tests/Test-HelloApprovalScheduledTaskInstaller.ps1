@@ -15,6 +15,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $sourceInstaller = Join-Path $repoRoot 'scripts\Install-HelloApprovalScheduledTask.ps1'
 $sourceLauncher = Join-Path $repoRoot 'scripts\Start-HelloApprovalAgent.ps1'
 $sourceModule = Join-Path $repoRoot 'lib\HelloApproval.Validation.psm1'
+$taskStub = Join-Path $PSScriptRoot 'support\Invoke-WithScheduledTaskStub.ps1'
 $ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $taskName = 'hello-approval Git Signing Agent'
 
@@ -448,6 +449,54 @@ function Test-BundleSentinelTime {
     return (@($items | Where-Object { $_.CreationTimeUtc -ne $bundleSentinelTime }).Count -eq 0)
 }
 
+function Assert-NoRealHelloApprovalTask([string]$When) {
+    # Safety net for stubbed runs: the real Task Scheduler must never hold the hello-approval task.
+    if ($null -ne (ScheduledTasks\Get-ScheduledTask -TaskName 'hello-approval Git Signing Agent' -TaskPath '' -ErrorAction SilentlyContinue)) {
+        throw "SAFETY: a real hello-approval Scheduled Task exists $When a stubbed run; aborting."
+    }
+}
+
+function Invoke-InstallerWithTaskStub {
+    # Runs the installer in a child Windows PowerShell 5.1 process beside a simulated same-name task
+    # (tests/support/Invoke-WithScheduledTaskStub.ps1) and returns the Task Scheduler calls it made.
+    param(
+        [string]$Installer,
+        [string]$LocalAppData,
+        [string]$ConfigPath,
+        [string]$Description,
+        [string]$State = 'Ready',
+        [switch]$WhatIf
+    )
+
+    $callLog = Join-Path (Split-Path -Parent $LocalAppData) ('task-calls-{0}.log' -f [Guid]::NewGuid().ToString('N'))
+    $stubArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $taskStub, '-Target', $Installer, '-CallLog', $callLog, '-Description', $Description, '-State', $State)
+    if ($WhatIf) { $stubArgs += @('-Switches', '-WhatIf') }
+
+    $oldLocal = $env:LOCALAPPDATA
+    $oldConfig = $env:HELLO_APPROVAL_TEST_CONFIG_PATH
+    try {
+        $env:LOCALAPPDATA = $LocalAppData
+        $env:HELLO_APPROVAL_TEST_CONFIG_PATH = $ConfigPath
+        $saved = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            Assert-NoRealHelloApprovalTask 'before'
+            $output = @(& $ps51 @stubArgs 2>&1 | ForEach-Object { [string]$_ })
+            Assert-NoRealHelloApprovalTask 'after'
+            $rc = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $saved
+        }
+    } finally {
+        $env:LOCALAPPDATA = $oldLocal
+        if ($null -eq $oldConfig) { Remove-Item Env:HELLO_APPROVAL_TEST_CONFIG_PATH -ErrorAction SilentlyContinue }
+        else { $env:HELLO_APPROVAL_TEST_CONFIG_PATH = $oldConfig }
+    }
+
+    $calls = @(if (Test-Path -LiteralPath $callLog) { Get-Content -LiteralPath $callLog | Where-Object { $_ } | ForEach-Object { ($_ -split ' ', 2)[0] } })
+    return [pscustomobject]@{ ExitCode = $rc; Output = ($output -join ' | '); Calls = $calls }
+}
+
 function Get-SshFingerprint([byte[]]$Blob) {
     return 'SHA256:' + [Convert]::ToBase64String([Security.Cryptography.SHA256]::Create().ComputeHash($Blob)).TrimEnd('=')
 }
@@ -801,6 +850,38 @@ try {
         $noProfileOutput = $noProfile.Output -join ' | '
         if ($noProfile.ExitCode -ne 0 -and $noProfileOutput -match 'USERPROFILE is not available') { Pass 'signing label: missing USERPROFILE is reported clearly' }
         else { Fail 'signing label: missing USERPROFILE is reported clearly' ("rc={0} output={1}" -f $noProfile.ExitCode,$noProfileOutput) }
+    }
+
+    if (-not $ExpectedPhase1) {
+        # #40: the ownership marker is compared exactly. A same-name task whose description is only a
+        # case variant of the marker is foreign and must never be stopped, replaced or registered over.
+        $markerRoot = Join-Path $root 'marker'
+        [void][IO.Directory]::CreateDirectory($markerRoot)
+        $markerRepo = New-SyntheticRepo -Root $markerRoot
+        $markerLocal = Join-Path $markerRoot 'local'
+        $markerConfig = Join-Path $markerRoot 'config\config.toml'
+        [void](New-SyntheticRuntime -LocalAppData $markerLocal -PinPath $markerRepo.PinPath -ConfigPath $markerConfig)
+        $markerLauncherRoot = Join-Path $markerLocal 'hello-approval\app\launcher'
+        $exactMarker = 'hello-approval/ha-1.3/v1'
+
+        foreach ($variant in @(
+                @{ Description = $exactMarker.ToUpperInvariant(); State = 'Ready'; WhatIf = $true },
+                @{ Description = $exactMarker.ToUpperInvariant(); State = 'Running'; WhatIf = $false },
+                @{ Description = 'Hello-Approval/HA-1.3/v1'; State = 'Running'; WhatIf = $false })) {
+            $name = "case-variant task marker '{0}' ({1}{2}) is refused before task or cache mutation" -f $variant.Description, $variant.State, $(if ($variant.WhatIf) { ', -WhatIf' } else { '' })
+            $r = Invoke-InstallerWithTaskStub -Installer $markerRepo.Installer -LocalAppData $markerLocal -ConfigPath $markerConfig -Description $variant.Description -State $variant.State -WhatIf:$variant.WhatIf
+            $mutatingCalls = @($r.Calls | Where-Object { $_ -in @('Stop', 'Unregister', 'Register', 'Start', 'Disable') })
+            if ($r.ExitCode -ne 0 -and $r.Output -match 'Refusing to replace foreign task' -and $mutatingCalls.Count -eq 0 -and -not (Test-Path -LiteralPath $markerLauncherRoot)) { Pass $name }
+            else { Fail $name ("rc={0} calls=[{1}] launcherRoot={2} output={3}" -f $r.ExitCode, ($r.Calls -join ','), (Test-Path -LiteralPath $markerLauncherRoot), $r.Output) }
+        }
+
+        $exactWhatIf = Invoke-InstallerWithTaskStub -Installer $markerRepo.Installer -LocalAppData $markerLocal -ConfigPath $markerConfig -Description $exactMarker -State 'Ready' -WhatIf
+        if ($exactWhatIf.ExitCode -eq 0 -and $exactWhatIf.Output -notmatch 'Refusing to replace foreign task' -and @($exactWhatIf.Calls | Where-Object { $_ -in @('Stop', 'Unregister', 'Register') }).Count -eq 0) { Pass 'exact task marker remains owned under -WhatIf' }
+        else { Fail 'exact task marker remains owned under -WhatIf' ("rc={0} calls=[{1}] output={2}" -f $exactWhatIf.ExitCode, ($exactWhatIf.Calls -join ','), $exactWhatIf.Output) }
+
+        $exactUpdate = Invoke-InstallerWithTaskStub -Installer $markerRepo.Installer -LocalAppData $markerLocal -ConfigPath $markerConfig -Description $exactMarker -State 'Ready'
+        if ($exactUpdate.Output -notmatch 'Refusing to replace foreign task' -and ($exactUpdate.Calls -contains 'Register') -and $exactUpdate.Output -match 'HELLO_APPROVAL_TEST_REGISTRATION_BOUNDARY') { Pass 'exact task marker remains owned and reaches the update registration boundary' }
+        else { Fail 'exact task marker remains owned and reaches the update registration boundary' ("rc={0} calls=[{1}] output={2}" -f $exactUpdate.ExitCode, ($exactUpdate.Calls -join ','), $exactUpdate.Output) }
     }
 
     Write-Host ''

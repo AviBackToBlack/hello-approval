@@ -268,7 +268,7 @@ if ($null -ne $task) {
     $ns.AddNamespace('t', 'http://schemas.microsoft.com/windows/2004/02/mit/task')
     $descriptionNode = $taskXml.SelectSingleNode('/t:Task/t:RegistrationInfo/t:Description', $ns)
     $description = if ($null -eq $descriptionNode) { $null } else { [string]$descriptionNode.InnerText }
-    if ($description -ne $TaskMarker) {
+    if ($description -cne $TaskMarker) {
         throw "Refusing full cleanup because same-name Scheduled Task is foreign; ownership marker is '$description'."
     }
 }

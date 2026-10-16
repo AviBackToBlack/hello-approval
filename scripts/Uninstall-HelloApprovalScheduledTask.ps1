@@ -44,7 +44,7 @@ if ($null -eq $task) {
 
 $xml = Get-TaskXml
 $description = Get-TaskDescription -Xml $xml
-if ($description -ne $TaskMarker) {
+if ($description -cne $TaskMarker) {
     throw "Refusing to remove foreign task '$TaskPath$TaskName'; ownership marker is '$description'."
 }
 

@@ -14,6 +14,7 @@ $sourceScripts = Join-Path $repoRoot 'scripts'
 $sourceLib = Join-Path $repoRoot 'lib'
 $sourceProvenance = Join-Path $repoRoot 'provenance'
 $ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$taskStub = Join-Path $PSScriptRoot 'support\Invoke-WithScheduledTaskStub.ps1'
 $keyType = 'sk-ecdsa-sha2-nistp256@openssh.com'
 $principal = 'synthetic@example.invalid'
 
@@ -301,8 +302,15 @@ function New-Fixture {
     }
 }
 
+function Assert-NoRealHelloApprovalTask([string]$When) {
+    # Safety net for stubbed runs: the real Task Scheduler must never hold the hello-approval task.
+    if ($null -ne (ScheduledTasks\Get-ScheduledTask -TaskName 'hello-approval Git Signing Agent' -TaskPath '' -ErrorAction SilentlyContinue)) {
+        throw "SAFETY: a real hello-approval Scheduled Task exists $When a stubbed run; aborting."
+    }
+}
+
 function Invoke-Doctor {
-    param($Fixture)
+    param($Fixture, [AllowNull()][string]$TaskDescription)
 
     $oldLocal=$env:LOCALAPPDATA
     $oldApp=$env:APPDATA
@@ -324,10 +332,17 @@ function Invoke-Doctor {
 
         $doctorArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',$Fixture.Doctor,'-Json')
         if($null -ne $Fixture.Repo){ $doctorArgs+=@('-Repo',$Fixture.Repo) }
+        if($PSBoundParameters.ContainsKey('TaskDescription')){
+            # Simulate a same-name Scheduled Task with this description (tests/support/Invoke-WithScheduledTaskStub.ps1).
+            $callLog=Join-Path (Split-Path -Parent $Fixture.LocalAppData) 'task-calls.log'
+            $doctorArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',$taskStub,'-Target',$Fixture.Doctor,'-CallLog',$callLog,'-Description',$TaskDescription,'-State','Running','-Switches','-Json','-UseScriptExitCode')
+        }
         $saved=$ErrorActionPreference
         try {
             $ErrorActionPreference='Continue'
+            Assert-NoRealHelloApprovalTask 'before'
             $out=@(& $ps51 @doctorArgs 2>$null | ForEach-Object {[string]$_})
+            Assert-NoRealHelloApprovalTask 'after'
             $rc=$LASTEXITCODE
         } finally {
             $ErrorActionPreference=$saved
@@ -409,6 +424,9 @@ try {
         [pscustomobject]@{Name='hello-approval project-root junction';Args=@{ProjectRootThroughJunction=$true};Kind='project-junction'},
         [pscustomobject]@{Name='project Git directory junction';Args=@{GitRootThroughJunction=$true};Kind='git-junction'},
         [pscustomobject]@{Name='launcher app directory junction';Args=@{LauncherAppThroughJunction=$true};Kind='launcher-junction'},
+        [pscustomobject]@{Name='upper-case variant task marker';Args=@{};TaskDescription='HELLO-APPROVAL/HA-1.3/V1';Kind='task-marker-foreign'},
+        [pscustomobject]@{Name='mixed-case variant task marker';Args=@{};TaskDescription='Hello-Approval/ha-1.3/v1';Kind='task-marker-foreign'},
+        [pscustomobject]@{Name='exact task marker';Args=@{};TaskDescription='hello-approval/ha-1.3/v1';Kind='task-marker-owned'},
         [pscustomobject]@{Name='existing install with only the previous bundle generation';Args=@{PreviousGenerationLauncher=$true;OmitCurrentLauncher=$true};Kind='launcher-upgrade-required'},
         [pscustomobject]@{Name='upgraded install retaining the previous bundle generation';Args=@{PreviousGenerationLauncher=$true};Kind='launcher-retained-previous'},
         [pscustomobject]@{Name='signing public key through .ssh junction';Args=@{PublicKeyThroughJunction=$true};Kind='public-key-junction'},
@@ -443,7 +461,7 @@ try {
         $fixtureRoot=Join-Path $root ($case.Name -replace '[^A-Za-z0-9]+','-')
         $fixtureArgs=$case.Args
         $fixture=New-Fixture -Root $fixtureRoot @fixtureArgs
-        $result=Invoke-Doctor -Fixture $fixture
+        $result=if($null -ne $case.PSObject.Properties['TaskDescription']){ Invoke-Doctor -Fixture $fixture -TaskDescription $case.TaskDescription } else { Invoke-Doctor -Fixture $fixture }
 
         if(Has-DoctorInternal $result){
             Fail $case.Name ('doctor.internal was emitted: ' + (($result.Json.findings | Where-Object {$_.check -eq 'doctor.internal'} | ConvertTo-Json -Depth 8) -join ''))
@@ -604,6 +622,24 @@ try {
                     Pass ('hardened Doctor classifies {0} as structured pin.policy.validation BLOCK' -f $case.Name)
                 } else {
                     Fail ('hardened Doctor classifies {0} as structured pin.policy.validation BLOCK' -f $case.Name) ('rc={0} findings={1}' -f $result.ExitCode,(($result.Json.findings | Where-Object { $_.severity -eq 'BLOCK' } | ConvertTo-Json -Depth 8) -join ''))
+                }
+            }
+            'task-marker-foreign' {
+                # #40: case variants of the ownership marker are foreign, so Doctor must not treat the task
+                # as owned or reach the critical-definition comparison for it.
+                if($ExpectedPhase1){
+                    Write-Host ('SKIP  {0}: exact-case task ownership is a Phase 2 contract' -f $case.Name)
+                } elseif((Has-Finding $result 'BLOCK' 'task.ownership') -and -not (Has-Finding $result 'PASS' 'task.ownership') -and -not (Has-Finding $result 'PASS' 'task.definition')){
+                    Pass ('Doctor classifies {0} as BLOCK task.ownership' -f $case.Name)
+                } else {
+                    Fail ('Doctor classifies {0} as BLOCK task.ownership' -f $case.Name) (($result.Json.findings | Where-Object { $_.check -like 'task.*' } | ConvertTo-Json -Depth 8) -join '')
+                }
+            }
+            'task-marker-owned' {
+                if((Has-Finding $result 'PASS' 'task.ownership') -and -not (Has-Finding $result 'BLOCK' 'task.ownership')){
+                    Pass 'Doctor keeps PASS task.ownership for the exact task marker'
+                } else {
+                    Fail 'Doctor keeps PASS task.ownership for the exact task marker' (($result.Json.findings | Where-Object { $_.check -like 'task.*' } | ConvertTo-Json -Depth 8) -join '')
                 }
             }
             'launcher-upgrade-required' {

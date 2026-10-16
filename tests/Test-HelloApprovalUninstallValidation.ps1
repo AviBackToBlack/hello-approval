@@ -14,6 +14,7 @@ $sourceUninstall = Join-Path $repoRoot 'scripts\Uninstall-HelloApproval.ps1'
 $sourceScheduledTaskUninstall = Join-Path $repoRoot 'scripts\Uninstall-HelloApprovalScheduledTask.ps1'
 $sourceModule = Join-Path $repoRoot 'lib\HelloApproval.Validation.psm1'
 $ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$taskStub = Join-Path $PSScriptRoot 'support\Invoke-WithScheduledTaskStub.ps1'
 
 $script:Passed = 0
 $script:Failed = 0
@@ -265,6 +266,63 @@ function Invoke-UninstallWhatIf {
     }
 }
 
+function Assert-NoRealHelloApprovalTask([string]$When) {
+    # Safety net for stubbed runs: the real Task Scheduler must never hold the hello-approval task.
+    if ($null -ne (ScheduledTasks\Get-ScheduledTask -TaskName 'hello-approval Git Signing Agent' -TaskPath '' -ErrorAction SilentlyContinue)) {
+        throw "SAFETY: a real hello-approval Scheduled Task exists $When a stubbed run; aborting."
+    }
+}
+
+function Invoke-UninstallWithTaskStub {
+    # Full Uninstall in a child Windows PowerShell 5.1 process beside a simulated same-name Scheduled Task
+    # (tests/support/Invoke-WithScheduledTaskStub.ps1); returns the Task Scheduler calls it made.
+    param(
+        $Fixture,
+        [string]$Description,
+        [string]$State = 'Ready',
+        [switch]$WhatIf
+    )
+
+    $names = @('LOCALAPPDATA','APPDATA','USERPROFILE','HOME','GIT_CONFIG_GLOBAL','GIT_CONFIG_NOSYSTEM')
+    $old = @{}
+    foreach($name in $names){ $old[$name] = [Environment]::GetEnvironmentVariable($name,'Process') }
+    $callLog = Join-Path (Split-Path -Parent $Fixture.LocalAppData) ('task-calls-{0}.log' -f [Guid]::NewGuid().ToString('N'))
+    try {
+        $env:LOCALAPPDATA = $Fixture.LocalAppData
+        $env:APPDATA = $Fixture.AppData
+        $env:USERPROFILE = $Fixture.UserProfile
+        $env:HOME = $Fixture.UserProfile
+        $env:GIT_CONFIG_GLOBAL = $Fixture.GlobalGit
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+
+        $stubArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$taskStub,'-Target',$Fixture.Uninstall,'-CallLog',$callLog,'-Description',$Description,'-State',$State)
+        if($WhatIf){ $stubArgs += @('-Switches','-WhatIf') }
+        $saved = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            Assert-NoRealHelloApprovalTask 'before'
+            $out = @(& $ps51 @stubArgs 2>&1 | ForEach-Object { [string]$_ })
+            Assert-NoRealHelloApprovalTask 'after'
+            $rc = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $saved
+        }
+    } finally {
+        foreach($name in $names){
+            if($null -eq $old[$name]){ Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+            else { [Environment]::SetEnvironmentVariable($name,[string]$old[$name],'Process') }
+        }
+    }
+    $calls = @(if(Test-Path -LiteralPath $callLog){ Get-Content -LiteralPath $callLog | Where-Object { $_ } | ForEach-Object { ($_ -split ' ',2)[0] } })
+    return [pscustomobject]@{ExitCode=$rc;Output=@($out);Calls=$calls}
+}
+
+function Get-FixtureSnapshot($Fixture) {
+    # Path + SHA-256 of every file the full cleanup could touch, to prove a refusal mutated nothing.
+    $files = @(Get-ChildItem -LiteralPath $Fixture.LocalAppData -Recurse -Force -File) + @(Get-Item -LiteralPath $Fixture.GlobalGit -Force)
+    return (@($files | Sort-Object FullName | ForEach-Object { '{0}={1}' -f $_.FullName,(Get-FileSha256Local $_.FullName) }) -join "`n")
+}
+
 function Describe-Result($Result) {
     return "rc=$($Result.ExitCode) output=$($Result.Output -join ' | ')"
 }
@@ -368,6 +426,29 @@ try {
                 }
             }
         }
+    }
+
+    if(-not $ExpectedPhase1){
+        # #40: a same-name task whose description is only a case variant of the ownership marker is
+        # foreign. Full cleanup must refuse before stopping/unregistering it or touching any owned state.
+        $exactMarker = 'hello-approval/ha-1.3/v1'
+        $markerFixture = New-Fixture -Root (Join-Path $root 'task-marker') -IncludeOwnedGit
+        foreach($variant in @(
+                @{Description=$exactMarker.ToUpperInvariant();State='Running';WhatIf=$true},
+                @{Description=$exactMarker.ToUpperInvariant();State='Running';WhatIf=$false},
+                @{Description='Hello-Approval/HA-1.3/v1';State='Ready';WhatIf=$false})){
+            $name = "full cleanup refuses case-variant task marker '{0}' ({1}{2}) before mutation" -f $variant.Description,$variant.State,$(if($variant.WhatIf){', -WhatIf'}else{''})
+            $before = Get-FixtureSnapshot $markerFixture
+            $r = Invoke-UninstallWithTaskStub -Fixture $markerFixture -Description $variant.Description -State $variant.State -WhatIf:$variant.WhatIf
+            $after = Get-FixtureSnapshot $markerFixture
+            $taskMutations = @($r.Calls | Where-Object { $_ -in @('Stop','Unregister','Register','Start','Disable') })
+            if($r.ExitCode -ne 0 -and (($r.Output -join ' | ') -match 'same-name Scheduled Task is foreign') -and $taskMutations.Count -eq 0 -and $before -ceq $after){ Pass $name }
+            else { Fail $name ("rc={0} calls=[{1}] unchanged={2} output={3}" -f $r.ExitCode,($r.Calls -join ','),($before -ceq $after),($r.Output -join ' | ')) }
+        }
+
+        $exact = Invoke-UninstallWithTaskStub -Fixture $markerFixture -Description $exactMarker -State 'Running' -WhatIf
+        if($exact.ExitCode -eq 0 -and -not (($exact.Output -join ' | ') -match 'same-name Scheduled Task is foreign') -and @($exact.Calls | Where-Object { $_ -in @('Stop','Unregister') }).Count -eq 0){ Pass 'full cleanup keeps treating the exact task marker as owned under -WhatIf' }
+        else { Fail 'full cleanup keeps treating the exact task marker as owned under -WhatIf' ("rc={0} calls=[{1}] output={2}" -f $exact.ExitCode,($exact.Calls -join ','),($exact.Output -join ' | ')) }
     }
 
     Write-Host ''

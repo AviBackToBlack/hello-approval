@@ -128,6 +128,18 @@ $r = Invoke-UninstallerWithStubs -Task @{ Exists = $true; State = 'Ready'; HasDe
 if ($r.Error -match 'Refusing to remove foreign task' -and -not ($r.Calls -contains 'Unregister') -and $r.FinalExists) { Pass 'empty ownership marker is refused before mutation' }
 else { Fail 'empty ownership marker is refused before mutation' (Describe $r) }
 
+# Case-variant markers are foreign (#40): the ownership marker is compared exactly, so neither an idle
+# nor a running case-variant task may be stopped or unregistered.
+foreach ($variant in @(
+        @{ Description = $taskMarker.ToUpperInvariant(); State = 'Ready' },
+        @{ Description = $taskMarker.ToUpperInvariant(); State = 'Running' },
+        @{ Description = 'Hello-Approval/ha-1.3/v1'; State = 'Running' })) {
+    $name = "case-variant marker '{0}' ({1}) is refused before stop/unregister" -f $variant.Description, $variant.State
+    $r = Invoke-UninstallerWithStubs -Task @{ Exists = $true; State = $variant.State; HasDescription = $true; Description = $variant.Description; StopCompletes = $true }
+    if ($r.Error -match 'Refusing to remove foreign task' -and -not ($r.Calls -contains 'Stop') -and -not ($r.Calls -contains 'Unregister') -and $r.FinalExists) { Pass $name }
+    else { Fail $name (Describe $r) }
+}
+
 # Owned, not running: unregister without stop.
 $r = Invoke-UninstallerWithStubs -Task @{ Exists = $true; State = 'Ready'; HasDescription = $true; Description = $taskMarker }
 if ($null -eq $r.Error -and -not ($r.Calls -contains 'Stop') -and ($r.Calls -contains 'Unregister') -and -not $r.FinalExists -and $r.Output -match 'Only the owned Scheduled Task was removed') { Pass 'owned idle task is unregistered without stop' }
