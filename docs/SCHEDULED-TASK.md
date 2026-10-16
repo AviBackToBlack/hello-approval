@@ -146,3 +146,15 @@ Those broader lifecycle decisions remain separate gates.
 ## Production visual acceptance
 
 The Task Scheduler path adds one visual condition that HA-1.2 direct-launch acceptance could not prove: the system `powershell.exe` action is a console-subsystem executable. Production acceptance must explicitly watch the interactive desktop for any visible console flash both when invoking `-StartNow` and on a real user logon. A visible flash fails the no-visible-console contract and requires a new launcher/task design gate. The previously rejected `conhost.exe --headless` path remains rejected because it is not a supported hosting API and has unsuitable exit-propagation semantics; do not adopt it merely to hide a flash.
+
+### Default terminal application
+
+Known issue [#49](https://github.com/AviBackToBlack/hello-approval/issues/49). Whether the launcher's console stays hidden depends on a per-user Windows setting: **Windows Terminal → Settings → Startup → Default terminal application**. Observed on one production Windows 11 host (26H2, OS build 26300, Windows Terminal 1.24):
+
+- **Windows Terminal is the default:** Windows hands the `powershell.exe` launcher's console to Windows Terminal (`OpenConsole.exe`). The launcher then holds an invisible pseudo-console, but a **persistent Windows Terminal window or tab** stays open for as long as the task runs. `-WindowStyle Hidden` does not hide it. This fails the contract above.
+- **Windows Console Host is the default:** the launcher is hosted by a classic `conhost.exe`. No new visible window appeared, and signing and Doctor were healthy.
+- **"Let Windows decide":** not tested.
+
+Workaround for v0.1: set the default terminal application to **Windows Console Host**, then restart the owned task (`Stop-ScheduledTask` and then `Start-ScheduledTask` on `\hello-approval Git Signing Agent`) or sign in again. The setting is stored per user under `HKCU\Console\%%Startup`.
+
+This is a configuration dependency, not a fix. It has not been verified on other Windows builds or Terminal versions, or across a real logon. The release logon gate covers the logon case ([RELEASE.md](RELEASE.md#2-logon-acceptance-gate)). A launcher that does not depend on this setting needs its own design gate, as described above.
