@@ -138,7 +138,7 @@ Each step has its own document, and every installer supports `-WhatIf`. Run the 
 5. `scripts\Install-HelloApprovalGitConfig.ps1` ([GIT-CONFIG.md](docs/GIT-CONFIG.md)).
 6. `scripts\Install-HelloApprovalLocalVerification.ps1 -Principal <principal>` ([LOCAL-VERIFICATION.md](docs/LOCAL-VERIFICATION.md)).
 7. Set the default terminal application to Windows Console Host ([SCHEDULED-TASK.md](docs/SCHEDULED-TASK.md#default-terminal-application)), then run `scripts\Install-HelloApprovalScheduledTask.ps1` ([SCHEDULED-TASK.md](docs/SCHEDULED-TASK.md)).
-8. `scripts\Test-HelloApprovalDoctor.ps1`: must report no BLOCK findings ([DOCTOR-RECOVERY.md](docs/DOCTOR-RECOVERY.md)).
+8. `scripts\Test-HelloApprovalDoctor.ps1`: must report no BLOCK findings (exit 0). Investigate every WARN as well. The release and acceptance bar is no BLOCK **and** no WARN ([DOCTOR-RECOVERY.md](docs/DOCTOR-RECOVERY.md), [RELEASE.md](docs/RELEASE.md)).
 
 Register the public key on GitHub as a **Signing Key** if you want hosted verification ([GITHUB-VERIFICATION.md](docs/GITHUB-VERIFICATION.md)).
 

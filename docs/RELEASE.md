@@ -45,7 +45,7 @@ This gate proves what the Scheduled Task path is for: the agent starts on its ow
    cmd /d /c "ssh-keygen -Y verify -f `"$(git config --global --includes --get gpg.ssh.allowedSignersFile)`" -I <principal> -n git -s `"$f.sig`" < `"$f`""
    ```
 
-   Pass means both commands exit 0 and the output contains `Good "git" signature`.
+   Pass means both commands exit 0 and the output contains `Good "git" signature`. These `--global --includes` reads measure the context-neutral baseline, so run the probe outside any repository. Repository-local or `includeIf` settings can override them inside a worktree ([GIT-CONFIG.md](GIT-CONFIG.md)); section 3 checks the release worktree separately.
 
 If any check fails, restore signing using the host's rollback instructions and stop. The release is blocked until the failure is understood.
 
@@ -60,6 +60,10 @@ The release tag is created on the signing host with the existing Windows Hello-b
    git worktree add <clean-path> <release-commit-sha>
    cd <clean-path>
    git status --short   # must print nothing
+   # The signing settings in this worktree must come from the global baseline, not repo-local or includeIf overrides:
+   git config --show-origin --get gpg.ssh.program
+   git config --show-origin --get user.signingkey
+   git config --show-origin --get gpg.ssh.allowedSignersFile
    ```
 
 2. Create the annotated, signed tag (Windows Hello prompt):
@@ -68,14 +72,18 @@ The release tag is created on the signing host with the existing Windows Hello-b
    git tag -s v0.1.0 -m "hello-approval v0.1.0" <release-commit-sha>
    ```
 
-3. Verify the tag locally before pushing it. `git tag -v` uses the effective `gpg.ssh.allowedSignersFile`, which is the project trust store:
+3. Verify the tag locally before pushing it, **independently of the signing broker**.
+   - Plain `git tag -v` runs the effective `gpg.ssh.program`, which is the pinned `sshenc.exe` (it forwards the verification modes to `ssh-keygen`). That would route the release check through the same broker that made the signature.
+   - So pin stock Windows OpenSSH `ssh-keygen.exe` for this one command, as the local verifier does ([LOCAL-VERIFICATION.md](LOCAL-VERIFICATION.md)). Use `System32` from 64-bit Windows PowerShell; a 32-bit process must use the `Sysnative` alias instead.
+   - The trust store is still the effective `gpg.ssh.allowedSignersFile`, which is the project trust store.
 
    ```powershell
-   git tag -v v0.1.0
+   $sshKeygen = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh-keygen.exe'
+   git -c "gpg.ssh.program=$sshKeygen" tag -v v0.1.0
    git rev-parse 'v0.1.0^{commit}'   # must equal the release commit SHA
    ```
 
-   This requires `Good "git" signature` for the expected principal and key fingerprint.
+   This requires `Good "git" signature` for the expected principal and key fingerprint. If this step fails, first check that `$sshKeygen` exists and that the trust store is the effective one; a verifier-selection problem does not mean the tag is bad.
 
 4. Push only the tag:
 
