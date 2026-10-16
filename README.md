@@ -162,4 +162,5 @@ See [Upstream provenance and pinning](docs/PROVENANCE.md) for the immutable rele
 
 ## License
 
-This repository does not yet include a license file. The choice of license is a pending maintainer decision, to be made before the first release is published.
+This project is licensed under the Apache License, Version 2.0.
+See [LICENSE](LICENSE) for the full license text.
