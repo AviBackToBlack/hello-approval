@@ -56,3 +56,23 @@ jobs:
         run: |
           & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\tests\Invoke-HelloApprovalCI.ps1 -Suite $env:SUITE
           exit $LASTEXITCODE
+
+  required-ci:
+    # Stable branch-protection check: requires both manifest planning and every matrix suite.
+    name: Required CI
+    if: ${{ always() }}
+    needs: [plan, suite]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify full Windows PowerShell 5.1 acceptance
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          SUITE_RESULT: ${{ needs.suite.result }}
+        shell: bash
+        run: |
+          printf 'Plan suites: %s\nMatrix suites: %s\n' "$PLAN_RESULT" "$SUITE_RESULT"
+          if [[ "$PLAN_RESULT" != success || "$SUITE_RESULT" != success ]]; then
+            echo '::error::Windows PowerShell 5.1 acceptance is not fully successful.'
+            exit 1
+          fi
